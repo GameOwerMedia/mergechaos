@@ -7,7 +7,7 @@
   <img alt="No dependencies" src="https://img.shields.io/badge/dependencies-none-brightgreen.svg">
 </p>
 
-**mergechaos** turns the state many parallel agents leave behind (branches ahead of and behind the base, worktrees, uncommitted files of sessions that died, reports missing or stale) into a fact sheet, a merge plan that asks before it guesses, and a landing on the base branch that never overwrites anyone's uncommitted work.
+**mergechaos** turns the state many parallel agents leave behind (branches ahead of and behind the base, worktrees, uncommitted files of sessions that died, reports missing or stale) into a fact sheet, a merge plan that asks before it guesses, and a landing on the base branch that writes only paths it has checked against the disk, and leaves everything else as it found it.
 
 <p align="center"><img src="assets/demo.svg" alt="Terminal: inventory and plan of acme-shop, integrate stops on a conflict and resumes after it is resolved, a stale session is rescued, land classifies paths as SAFE and COLLIDE and merges the base change into a live edit, archive tags the leftovers" width="100%"></p>
 
@@ -21,7 +21,7 @@ Running several coding agents at once is easy. Merging what they leave is not:
 - Nobody knows which branch is still needed, which is already in the base under another hash, and which depends on which.
 - The obvious clean-up commands (`git checkout`, `git stash`, `git reset`, `git clean`) destroy the uncommitted work of sessions that are still running.
 
-mergechaos separates the facts (collected by a script, no model involved) from the judgement (a plan with a reason on every line, written by an agent and approved by a person), and executes the plan with git plumbing that only ever writes to places it owns: a separate integration worktree, new branch refs, and, at the very end, the paths of the base worktree that provably hold no one's edits.
+mergechaos separates the facts (collected by a script, no model involved) from the judgement (a plan with a reason on every line, written by an agent and approved by a person), and executes the plan with git plumbing that only ever writes to places it owns: a separate integration worktree, new branch refs, and, at the very end, the paths of the base worktree whose disk content it has just verified to be the old base (checked twice; see Limitations for the remaining race with a live editor).
 
 ## Install
 
@@ -32,19 +32,35 @@ mergechaos separates the facts (collected by a script, no model involved) from t
 /plugin install mergechaos@mergechaos
 ```
 
-**As a plain skill** (copy the folder):
+**As a plain skill** (copy the folder). macOS, Linux, Git Bash:
 
 ```bash
 git clone https://github.com/GameOwerMedia/mergechaos
 cp -r mergechaos/skills/mergechaos ~/.claude/skills/
 ```
 
-**As a command-line tool** (no install step; Node.js 18+ and git 2.38+):
+Windows PowerShell:
+
+```powershell
+git clone https://github.com/GameOwerMedia/mergechaos
+Copy-Item -Recurse mergechaos\skills\mergechaos "$HOME\.claude\skills\"
+```
+
+**As a command-line tool** (no install step; Node.js 20+ and git 2.25+, 2.38+ for conflict prediction). macOS, Linux, Git Bash:
 
 ```bash
 alias mergechaos="node ~/.claude/skills/mergechaos/scripts/mergechaos.mjs"
 mergechaos --help
 ```
+
+Windows PowerShell:
+
+```powershell
+function mergechaos { node "$HOME\.claude\skills\mergechaos\scripts\mergechaos.mjs" @args }
+mergechaos --help
+```
+
+The examples below use the POSIX shell form; `~` is your home folder.
 
 Recommended companion: **[premerge](https://github.com/GameOwerMedia/premerge)**, which lets each agent leave a report on its branch saying why it exists. mergechaos reads those reports; without them every branch is treated as "purpose unknown".
 
@@ -67,7 +83,7 @@ mergechaos archive --repo ~/work/acme-shop --branch rescue/acme-shop-theme/<date
 
 <p align="center"><img src="assets/flow.svg" alt="Flow: agents leave branches; premerge reports state why; the mergechaos plan gives TAKE, ASK or ARCHIVE; integrate merges in a separate worktree; land compares the disk path by path: EQUAL, SAFE, COLLIDE" width="100%"></p>
 
-**1. Inventory.** For each repository (linked worktrees are folded into their main repository): base and production branches; each worktree as `clean`, `live`, `stale` (uncommitted edits untouched for `--stale-hours`) or `missing`; each unmerged branch with ahead/behind, commits, files, its premerge report and whether that report is current; branches whose commits are already in the base under other hashes (`git cherry`); files changed by several branches; conflicts predicted against the base and between pairs of branches (`git merge-tree --write-tree`, nothing is written).
+**1. Inventory.** For each repository (linked worktrees are folded into their main repository): base and production branches; each worktree as `clean`, `live`, `stale` (uncommitted edits untouched for `--stale-hours`) or `missing`; each unmerged branch with ahead/behind, commits, files, its premerge report and whether that report is current; branches whose commits are already in the base under other hashes (`git cherry`); files changed by several branches; conflicts predicted against the base and between pairs of branches (`git merge-tree --write-tree`: no ref, index or working tree changes; git only stores unreferenced tree objects that its garbage collection removes).
 
 **2. Plan.** One verdict per branch, in dependency order:
 
@@ -81,17 +97,17 @@ The script drafts the plan mechanically and never upgrades ASK to TAKE. The skil
 
 **3. Integrate.** `merge/<stamp>` is created from the base tip recorded in the plan, in its own worktree under the run folder. TAKE branches are merged in order with real merge commits. A conflict stops the run (exit 6) with the file list; resolve it in that worktree, commit, and run `integrate` again: finished merges are skipped, moved branches are refused. Run the tests the reports list right there.
 
-**4. Rescue.** A stale worktree's uncommitted changes (edits, deletions, untracked files) become a commit on `rescue/<worktree>/<date>`, built through a temporary index on top of that worktree's HEAD. Nothing in the worktree changes. Private files (`.env*`, `*.local.*`, keys), lines that look like secrets and files above `--max-mb` are left out and listed in `.mergechaos/RESCUE.md` inside the commit by path, size and SHA-256. Live worktrees are never rescued: their owner commits.
+**4. Rescue.** A stale worktree's uncommitted changes (edits, deletions, untracked files) become a commit on `rescue/<worktree>/<date>`, built through a temporary index on top of that worktree's HEAD. Nothing in the worktree changes. Paths are passed to git as literal names (no glob expansion). Well-known private file names (`.env` and `*.env`, `*.local.*`, key stores, SSH keys, credential files), contents that look like credentials (UTF-16 files are decoded, binary files scanned as bytes; best effort, not a guarantee) and files above `--max-mb` are left out and listed in `.mergechaos/RESCUE.md` inside the commit by path, size and SHA-256. Live worktrees are never rescued: their owner commits.
 
 **5. Land.** Guards first: the base still points at the recorded tip, the integration commit contains it, nothing is staged and no merge is in progress where the base is checked out. Then each changed path is compared with what is on disk:
 
 | Class | Disk holds | Action |
 |---|---|---|
-| **EQUAL** | the new content already | nothing |
-| **SAFE** | the old base content | written from the new commit (temporary index + `checkout-index`), or deleted |
-| **COLLIDE** | someone's uncommitted edit | the base change is merged three-way into the edit when it merges cleanly (line endings kept); otherwise the file is left exactly as it was and listed (exit 7) |
+| **EQUAL** | the new content already | nothing (a pure exec-bit change is applied where the filesystem has one, reported otherwise) |
+| **SAFE** | the old base content, and no file or link sits where one of its folders should be | written from the new commit (temporary index + `checkout-index`), or deleted |
+| **COLLIDE** | anything else: someone's uncommitted edit, a file in the way of a new folder, a symlink, a submodule | for an edited text file (UTF-8 or another ASCII-compatible encoding), the base change is merged three-way into the edit, byte for byte, when it merges cleanly. Otherwise the path is left exactly as it is on disk and listed (exit 7); its index entry goes back to the old base, so `git diff` shows the owner's edit and `git diff --cached` the landed change the copy still lacks |
 
-The base ref then moves with an old-value check, and the worktree's index follows with a two-tree `read-tree` that does not touch files. If the base is not checked out anywhere, only the ref moves.
+The base ref then moves with an old-value check, and the worktree's index follows with a two-tree `read-tree` that does not touch files. If the base is not checked out anywhere, only the ref moves. Every SAFE path is classified a second time right before the write.
 
 **6. Archive.** Rescue branches and ARCHIVE verdicts become annotated `archive/*` tags; the branch refs are removed. Nothing is deleted from history. The flow ends here; pushing and deploying stay separate decisions.
 
@@ -140,7 +156,10 @@ No. It works on local refs and worktrees only.
 
 - Conflict prediction needs git 2.38+ (`merge-tree --write-tree`); with older git the map shows `?` and everything else still works.
 - Session liveness is a heuristic based on file times.
-- `land` merges collisions for modified text files only; files added or deleted on one side and binary files are left as they are and listed.
+- `land` merges collisions for modified text files in ASCII-compatible encodings only; UTF-16, binary files, symlinks, submodules and files added or deleted on one side are left as they are and listed.
+- `land` classifies each path twice and then writes; an editor saving the same file in the milliseconds between the second check and the write can still be overwritten. Land while sessions on the base worktree are idle.
+- Rescue's secret and private-file checks are pattern-based and best effort. Keep a dedicated scanner such as gitleaks in CI.
+- Unresolved collisions leave the base worktree with a staged difference (index at the old base for those paths); the owner brings the landed change in by hand before committing them.
 - Partial takes (some commits of a branch) are done by hand: cherry-pick them onto a new branch and take that branch.
 - One base branch per repository per run.
 

@@ -1,7 +1,7 @@
 // Tests for mergechaos on throwaway git repositories: branches, worktrees, stale sessions, a conflicting file.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -173,8 +173,10 @@ test('land: SAFE writes and deletes, EQUAL skips, a conflicting COLLIDE is left 
     assert.ok(!existsSync(join(d, 'e.txt')));
     assert.equal(readFileSync(join(d, 'c.txt'), 'utf8'), 'C1\nc2\nc3 mine\n');
     assert.equal(readFileSync(join(d, 'd.txt'), 'utf8'), 'd1 mine\nd2\nd3\n');
-    assert.equal(g('status', '--porcelain'), ' M c.txt\n M d.txt');
-    assert.match(out.stdout, /Unresolved collisions .*d\.txt/);
+    assert.equal(g('status', '--porcelain'), ' M c.txt\nMM d.txt', 'd.txt: index back at the old base, the disk keeps the edit');
+    assert.match(g('diff', '--', 'd.txt'), /^-d1\n\+d1 mine/m, 'git diff shows exactly the owner edit');
+    assert.match(g('diff', '--cached', '--', 'd.txt'), /^\+d1\n/m, 'git diff --cached shows the landed change the copy lacks');
+    assert.match(out.stdout, /Unresolved collisions.*d\.txt/);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
@@ -231,4 +233,93 @@ test('CLI: inventory and plan write MAP.md, map.json, PLAN.md and plan.json into
     assert.equal(reportJson('```premerge-json\n{"why":"x"}\n```').why, 'x');
     assert.equal(run('land', '--repo', dir).status, 2, 'usage error without --base/--old/--new');
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/** A repository whose integration branch is ready to land: returns { d, g, OLD }. */
+function landable(setupBase, setupNew) {
+  const d = temp(), g = initRepo(d);
+  setupBase(d, g); g('add', '-A'); g('commit', '-q', '-m', 'base');
+  const OLD = g('rev-parse', 'HEAD');
+  g('checkout', '-q', '-b', 'merge/x'); setupNew(d, g); g('add', '-A'); g('commit', '-q', '-m', 'integration'); g('checkout', '-q', 'main');
+  return { d, g, OLD };
+}
+
+test('land: an untracked file where the new commit needs a folder is never replaced (COLLIDE, exit 7)', () => {
+  const { d, g, OLD } = landable(dd => write(dd, 'a.txt', 'a\n'), dd => write(dd, 'docs/x.md', 'new\n'));
+  try {
+    write(d, 'docs', 'MY UNCOMMITTED NOTES\n');
+    const out = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x');
+    assert.equal(out.status, 7, out.stdout + out.stderr);
+    assert.match(out.stdout, /COLLIDE\tA\tdocs\/x\.md/); assert.match(out.stdout, /a file or link is in the way: docs/);
+    assert.equal(readFileSync(join(d, 'docs'), 'utf8'), 'MY UNCOMMITTED NOTES\n');
+    assert.equal(g('rev-parse', 'main'), g('rev-parse', 'merge/x'), 'the base still lands');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('land: a tracked file with an uncommitted edit that the new commit turns into a folder is kept (COLLIDE, exit 7)', () => {
+  const { d, g, OLD } = landable(dd => write(dd, 'docs', 'v1\n'), (dd, gg) => { gg('rm', '-q', 'docs'); write(dd, 'docs/x.md', 'new\n'); });
+  try {
+    write(d, 'docs', 'v1\nMY UNCOMMITTED EDIT\n');
+    const out = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x');
+    assert.equal(out.status, 7, out.stdout + out.stderr);
+    assert.equal(readFileSync(join(d, 'docs'), 'utf8'), 'v1\nMY UNCOMMITTED EDIT\n', 'the edit survives');
+    assert.match(g('diff', '--', 'docs'), /^\+MY UNCOMMITTED EDIT/m, 'git diff shows the edit against the old file');
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('mergeIntoDisk works on bytes: Latin-1 edits are kept exactly; UTF-16 and binary files are refused untouched', () => {
+  const d = temp();
+  try {
+    const f = join(d, 'f.txt'), L = t => Buffer.from(t, 'latin1');
+    writeFileSync(f, L('l1\nl2\nl3 caf\xe9 \xb1\n'));
+    assert.deepEqual(mergeIntoDisk(f, L('l1\nl2\nl3\n'), L('L1\nl2\nl3\n')), { ok: true, eol: 'LF' });
+    assert.ok(readFileSync(f).equals(L('L1\nl2\nl3 caf\xe9 \xb1\n')), 'user bytes kept, base change merged');
+    const u16 = t => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(t, 'utf16le')]);
+    writeFileSync(f, u16('a\nb\nmine\n'));
+    const r = mergeIntoDisk(f, u16('a\nb\n'), u16('A\nb\n'));
+    assert.equal(r.ok, false); assert.match(r.why, /UTF-16/); assert.ok(readFileSync(f).equals(u16('a\nb\nmine\n')));
+    writeFileSync(f, Buffer.from([1, 0, 2, 10]));
+    assert.equal(mergeIntoDisk(f, Buffer.from([1, 0, 10]), Buffer.from([3, 0, 10])).ok, false);
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('land: a Latin-1 collision is merged without touching the owner bytes', () => {
+  const L = t => Buffer.from(t, 'latin1');
+  const { d, g, OLD } = landable(dd => writeFileSync(join(dd, 'f.txt'), L('l1\nl2\nl3\n')), dd => writeFileSync(join(dd, 'f.txt'), L('L1\nl2\nl3\n')));
+  try {
+    writeFileSync(join(d, 'f.txt'), L('l1\nl2\nl3 caf\xe9 \xb1\n'));
+    const out = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x');
+    assert.equal(out.status, 0, out.stdout + out.stderr);
+    assert.ok(readFileSync(join(d, 'f.txt')).equals(L('L1\nl2\nl3 caf\xe9 \xb1\n')));
+    assert.equal(g('rev-parse', 'main'), g('rev-parse', 'merge/x'));
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('land: a mode-only change is applied where the filesystem has an exec bit, reported otherwise', () => {
+  const { d, g, OLD } = landable(dd => write(dd, 'run.sh', 'echo hi\n'), (dd, gg) => gg('update-index', '--chmod=+x', 'run.sh'));
+  try {
+    const out = land({ repo: d, base: 'main', oldRef: OLD, newRef: 'merge/x' });
+    const row = out.table.find(t => t.path === 'run.sh');
+    if (process.platform === 'win32') {
+      assert.equal(row.kind, 'EQUAL'); assert.match(row.reason, /mode change not applied/);
+    } else {
+      assert.equal(row.kind, 'SAFE'); assert.ok(statSync(join(d, 'run.sh')).mode & 0o100, 'exec bit set');
+      assert.equal(g('status', '--porcelain'), '');
+    }
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('rescue: names are literal pathspecs (".e[n]v" does not pull ".env" in); private names and UTF-16 secrets stay out', () => {
+  const d = temp();
+  try {
+    const g = initRepo(d);
+    write(d, 'a.txt', 'a\n'); g('add', '.'); g('commit', '-q', '-m', 'base');
+    write(d, '.env', 'A=1\n'); write(d, '.e[n]v', 'harmless\n'); write(d, 'pages/[id].js', 'export default 1\n');
+    write(d, 'pages/i.js', 'export default 2\n'); write(d, 'prod.env', 'A=1\n'); write(d, '.git-credentials', 'x\n');
+    writeFileSync(join(d, 'win.txt'), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('password=' + JSON.parse(FAKE) + '\r\n', 'utf16le')]));
+    const r = rescue({ worktree: d, name: 'rescue/t' });
+    const tree = g('ls-tree', '-r', '--name-only', 'rescue/t').split('\n').sort();
+    assert.deepEqual(tree, ['.e[n]v', '.mergechaos/RESCUE.md', 'a.txt', 'pages/[id].js', 'pages/i.js']);
+    assert.deepEqual(r.left.map(x => x.path).sort(), ['.env', '.git-credentials', 'prod.env', 'win.txt']);
+  } finally { rmSync(d, { recursive: true, force: true }); }
 });

@@ -32,5 +32,5 @@
 <circle cx="1230" cy="160" r="8" stroke-width="3" style="fill:var(--card);stroke:var(--fg)"/>
 <text x="64" y="138" font-size="72" class="mono h">mergechaos</text>
 <text x="66" y="186" font-size="24" class="" >From many branches and dead sessions to one clean base.</text>
-<text x="66" y="222" font-size="17" class="muted" >Inventory, a plan that asks before it guesses, landing that loses nothing.</text>
+<text x="66" y="222" font-size="17" class="muted" >Inventory, a plan that asks before it guesses, a landing that writes only verified paths.</text>
 </svg>

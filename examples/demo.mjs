@@ -17,7 +17,12 @@ const sibling = path.join(here, '..', '..', 'premerge', 'skills', 'premerge', 's
 const premerge = process.env.PREMERGE_SCRIPT || (existsSync(sibling) ? sibling : null);
 const root = mkdtempSync(path.join(tmpdir(), 'mergechaos-demo-'));
 const runDir = path.join(root, 'runs', 'demo');
-const hide = s => String(s).split(root).join('~/work').split(root.replace(/\\/g, '/')).join('~/work').replace(/\\/g, '/');
+/** Neutral output: temp paths become ~/work, run stamps and clock times become placeholders. */
+const hide = s => String(s).split(root).join('~/work').split(root.replace(/\\/g, '/')).join('~/work').replace(/\\/g, '/')
+  .replace(/\b\d{4}-\d{2}-\d{2}-\d{2}-\d{2}\b/g, '<stamp>')
+  .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z/g, '<time>')
+  .replace(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/g, '<time>')
+  .replace(/\b\d{4}-\d{2}-\d{2}\b/g, '<date>');
 const transcript = [];
 const note = t => { transcript.push(`# ${t}`); console.log(`\n# ${t}`); };
 function mc(...args) {

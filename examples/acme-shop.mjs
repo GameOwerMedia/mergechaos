@@ -10,8 +10,6 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-const DAY = 864e5;
-
 export function gitIn(dir) {
   return (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).replace(/\s+$/, '');
 }
@@ -101,4 +99,3 @@ export function buildAcmeShop(root, { premerge = null, staleHours = 24 } = {}) {
   return { dir, wtC, g, gc };
 }
 
-export { DAY };

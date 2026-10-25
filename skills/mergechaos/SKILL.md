@@ -6,9 +6,9 @@ argument-hint: "[--repo <dir> ...]"
 
 # mergechaos
 
-One repository with two branches is a `git merge`. Ten agents across three repositories, each with a branch, a worktree and some uncommitted files, is chaos: commits ahead of and behind the base, reports missing or stale, the same file edited in three places, sessions that died in the middle of an edit. mergechaos turns that into a list of facts, a plan a person can approve, and a landing that loses nothing.
+One repository with two branches is a `git merge`. Ten agents across three repositories, each with a branch, a worktree and some uncommitted files, is chaos: commits ahead of and behind the base, reports missing or stale, the same file edited in three places, sessions that died in the middle of an edit. mergechaos turns that into a list of facts, a plan a person can approve, and a landing that writes only paths it has verified and leaves everything else as it found it.
 
-The tool is one dependency-free script: `node "${CLAUDE_SKILL_DIR}/scripts/mergechaos.mjs"` (Node.js 18+, git 2.38+ for conflict prediction). Below it is written as `mergechaos`. It reads the reports written by the companion skill **premerge** (`docs/premerge/<branch>.md` on each branch), and works without them too: a branch without a report simply gets the verdict ASK.
+The tool is one dependency-free script: `node "${CLAUDE_SKILL_DIR}/scripts/mergechaos.mjs"` (Node.js 20+, git 2.25+; 2.38+ for conflict prediction). Below it is written as `mergechaos`. It reads the reports written by the companion skill **premerge** (`docs/premerge/<branch>.md` on each branch), and works without them too: a branch without a report simply gets the verdict ASK.
 
 ## Character: devil's advocate, never a yes-man
 
@@ -42,15 +42,15 @@ For every ASK and ARCHIVE verdict, and anything that touches a production branch
 `mergechaos integrate --run <run dir>` creates `merge/<stamp>` from the recorded base tip in a separate worktree (`<run>/wt/<repo>`) and merges the TAKE branches in plan order with real merge commits. It never moves the base. On a conflict it stops (exit 6) and lists the files: resolve them in that worktree keeping both sides, `git commit --no-edit`, and run `integrate` again; finished merges are skipped. Then run the tests every report lists, inside the integration worktree, and review the combined diff. Regenerate derived files (lockfiles, generated manifests) after the last merge instead of hand-merging them.
 
 ### 6. Rescue dead sessions
-For every **stale** worktree: `mergechaos rescue --worktree <dir>`. It commits all uncommitted work (edits, deletions, untracked files) onto `rescue/<worktree>/<date>` through a temporary index, with a manifest `.mergechaos/RESCUE.md`. The worktree, its index and its HEAD do not change. Private files (`.env*`, `*.local.*`, keys), possible secrets and files above `--max-mb` stay out and are listed by path, size and hash, never by content. A **live** worktree is reported, never rescued: its owner commits and writes a report.
+For every **stale** worktree: `mergechaos rescue --worktree <dir>`. It commits all uncommitted work (edits, deletions, untracked files) onto `rescue/<worktree>/<date>` through a temporary index, with a manifest `.mergechaos/RESCUE.md`. The worktree, its index and its HEAD do not change. Well-known private file names, contents that look like credentials (best effort) and files above `--max-mb` stay out and are listed by path, size and hash, never by content. A **live** worktree is reported, never rescued: its owner commits and writes a report.
 
 ### 7. Land (only with the user's go-ahead)
 `mergechaos land --repo <dir> --base <base> --old <recorded base tip> --new merge/<stamp> [--dry-run]`
 
 Guards: the base still points at `--old` (otherwise merge the new base commits into the integration branch, retest, and update `--old`), the integration commit contains the base, nothing is staged and no merge is in progress in the worktree that has the base checked out. Then every path that changes is classified:
 - **EQUAL**: the disk already holds the new content; nothing is written.
-- **SAFE**: the disk still holds the old base content; the new content is written.
-- **COLLIDE**: the disk holds someone's uncommitted edit. The base change is merged three-way into that edit when it merges cleanly (line endings kept); otherwise the file is left exactly as it was and listed (exit 7).
+- **SAFE**: the disk still holds the old base content and no file blocks its folders; the new content is written.
+- **COLLIDE**: anything else (an uncommitted edit, a file in the way of a new folder, a symlink, a submodule). For an edited text file the base change is merged three-way into the edit, byte for byte, when it merges cleanly; otherwise the path is left exactly as it is on disk and listed (exit 7), with its index entry back at the old base. Tell the owner: `git diff` shows their edit, `git diff --cached` the landed change their copy lacks.
 
 The base ref moves atomically (old-value check) and the worktree's index follows it without touching any other file. If the base is not checked out anywhere, only the ref moves. Always run `--dry-run` first and show the table. Never push and never deploy as part of this flow; those are separate decisions of the user.
 

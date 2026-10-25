@@ -9,13 +9,16 @@
 //   archive    turns finished rescue branches and ARCHIVE verdicts into archive/* tags and removes the branch refs
 //
 // Nothing here checks out, stashes, resets or cleans a working tree that someone else may be using.
-// No dependencies: Node.js 18+ and git 2.38+ (git merge-tree --write-tree for conflict prediction; older git still works without it).
+// No dependencies: Node.js 20+ and git 2.25+ (2.38+ for conflict prediction with git merge-tree --write-tree).
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isPrivateFile, scanBuffer, utf16Kind } from './safety.mjs';
 
 export const VERSION = '0.1.0';
 export const SCHEMA = 1;
@@ -24,25 +27,25 @@ const MARKER = 'premerge-json';
 const PROD_PATTERN = /^(prod|production|release)([-_/].*)?$|^(main|master)$/;
 const BASE_CANDIDATES = ['main', 'master', 'trunk', 'develop'];
 const MAX_BRANCHES = 80, MAX_COMMITS = 300, MAX_DIRTY_STAT = 3000;
-export const PRIVATE_FILE = /(^|\/)(\.env(\.[^/]*)?|[^/]*\.local\.[^/]+|[^/]*\.(pem|key|p12|pfx)|id_(rsa|dsa|ecdsa|ed25519)|\.npmrc|\.pypirc|\.netrc|credentials[^/]*\.json)$/i;
-const ENV_EXAMPLE = /(^|\/)\.env\.(example|sample|template)$/i;
-const SECRET_RULES = [
-  ['private key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
-  ['provider key', /\b(sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|hf_[A-Za-z0-9]{30,}|glpat-[A-Za-z0-9_-]{20,})\b/],
-  ['assigned secret', /\b(api[_-]?key|secret|token|password|passwd|client[_-]?secret)\b["']?\s*[:=]\s*["'][^"'\s]{12,}["']/i],
-];
+export { PRIVATE_FILE, isPrivateFile, secretKinds, scanBuffer } from './safety.mjs';
 
 // ---------- git and small helpers ----------
 
+/** Environment for every git call: never take optional locks in other people's worktrees (git status refreshes the index). */
+const gitEnv = env => ({ ...(env || process.env), GIT_OPTIONAL_LOCKS: '0' });
+/** Runs git with unquoted non-ASCII paths, so file names in every listing are real names. */
 export function git(cwd, args, { env, input, allowFail = false } = {}) {
-  const r = spawnSync('git', args, { cwd, env: env || process.env, input, encoding: 'utf8', maxBuffer: 256 << 20, windowsHide: true });
+  const r = spawnSync('git', ['-c', 'core.quotepath=false', ...args], {
+    cwd, env: gitEnv(env), input, encoding: 'utf8', maxBuffer: 256 << 20, windowsHide: true,
+  });
   if (r.status !== 0) {
     if (allowFail) return null;
     throw new Error(`git ${args.join(' ')} failed: ${(r.stderr || r.stdout || '').trim()}`);
   }
   return r.stdout.replace(/\s+$/, '');
 }
-const gitRaw = (cwd, args) => spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 256 << 20, windowsHide: true });
+const gitRaw = (cwd, args, { encoding = 'utf8', env } = {}) =>
+  spawnSync('git', ['-c', 'core.quotepath=false', ...args], { cwd, env: gitEnv(env), encoding, maxBuffer: 256 << 20, windowsHide: true });
 const lines = s => (s ? s.split('\n').filter(Boolean) : []);
 const isAncestor = (cwd, a, b) => gitRaw(cwd, ['merge-base', '--is-ancestor', a, b]).status === 0;
 const refExists = (cwd, ref) => git(cwd, ['rev-parse', '--verify', '-q', ref], { allowFail: true }) !== null;
@@ -370,7 +373,7 @@ export function renderPlan(plan, { runDir = '<run>' } = {}) {
     if (asks.length) {
       s.push('**Questions (blocking only for their own branch):**', '');
       asks.forEach((x, i) => s.push(`${i + 1}. ${code(x.branch)}${x.author ? ` (author: ${x.author})` : ''}: ${x.reason}`,
-        '   - A (recommended): ask the author for a premerge report (`premerge --why "..." --commit`), then re-run `inventory` and `plan`.',
+        '   - A (recommended): ask the author for a premerge report (`premerge report --why "..." --commit`), then re-run `inventory` and `plan`.',
         '   - B: take it as it is. Only if you can state its purpose yourself; write that purpose into plan.json.',
         '   - C: archive it (tag `archive/<branch>`, nothing is lost).'));
       s.push('');
@@ -424,16 +427,13 @@ export function integrate(plan, { runDir, only = null, log = () => {} } = {}) {
 
 // ---------- rescue ----------
 
-function secretKinds(text) {
-  const out = new Set();
-  for (const l of text.split('\n')) for (const [kind, re] of SECRET_RULES) if (re.test(l)) out.add(kind);
-  return [...out];
-}
+const sha256 = buf => createHash('sha256').update(buf).digest('hex');
 
 /**
  * Commits every uncommitted change of a worktree (tracked edits, deletions, untracked files) onto a new branch,
- * through a temporary index. The worktree, its index and its HEAD are not touched. Private files, possible secrets and
- * files above `maxMb` stay out of the commit; a manifest inside the commit lists them (path, size, sha256, never contents).
+ * through a temporary index. The worktree, its index and its HEAD are not touched. Private file names, contents that
+ * look like secrets (UTF-16 decoded, binary scanned as bytes) and files above `maxMb` stay out of the commit; a manifest
+ * inside the commit lists them by path, size and SHA-256, never by content. Best effort: see safety.mjs.
  */
 export function rescue({ worktree, name, onto = 'HEAD', maxMb = 1, now = new Date() }) {
   const wt = git(worktree, ['rev-parse', '--show-toplevel']);
@@ -442,34 +442,42 @@ export function rescue({ worktree, name, onto = 'HEAD', maxMb = 1, now = new Dat
   const parent = git(wt, ['rev-parse', `${onto}^{commit}`]);
   const branch = name || uniqueBranch(wt, `rescue/${slug(path.basename(wt))}/${now.toISOString().slice(0, 10)}`);
   if (refExists(wt, `refs/heads/${branch}`)) throw new Error(`branch ${branch} already exists; pass --name`);
-  const take = [], left = [];
+  const take = new Set(), left = [];
   for (const e of entries) {
     for (const p of [e.path, e.from].filter(Boolean)) {
       const abs = path.join(wt, p);
-      if (PRIVATE_FILE.test(p) && !ENV_EXAMPLE.test(p)) { left.push({ path: p, why: 'private file' }); continue; }
-      if (!existsSync(abs)) { take.push(p); continue; }                 // a deletion
-      const st = statSync(abs);
+      if (isPrivateFile(p)) { left.push({ path: p, why: 'private file' }); continue; }
+      if (!existsSync(abs)) { take.add(p); continue; }                 // a deletion
+      const st = lstatSync(abs);
       if (st.isDirectory()) { left.push({ path: p, why: 'nested repository or submodule' }); continue; }
-      if (st.size > maxMb * 1e6) { left.push({ path: p, why: `larger than ${maxMb} MB`, size: st.size, sha256: createHash('sha256').update(readFileSync(abs)).digest('hex') }); continue; }
+      if (st.isSymbolicLink()) { take.add(p); continue; }                // the link itself, not its target
       const buf = readFileSync(abs);
-      const kinds = buf.includes(0) ? [] : secretKinds(buf.toString('utf8'));
+      if (st.size > maxMb * 1e6) { left.push({ path: p, why: `larger than ${maxMb} MB`, size: st.size, sha256: sha256(buf) }); continue; }
+      const kinds = scanBuffer(buf);
       if (kinds.length) { left.push({ path: p, why: `possible secret (${kinds.join(', ')})` }); continue; }
-      take.push(p);
+      take.add(p);
     }
   }
-  const idx = path.join(path.resolve(wt, git(wt, ['rev-parse', '--git-dir'])), `mergechaos-rescue-${process.pid}.idx`), env = { ...process.env, GIT_INDEX_FILE: idx };
+  const idx = path.join(path.resolve(wt, git(wt, ['rev-parse', '--git-dir'])), `mergechaos-rescue-${process.pid}.idx`);
+  // literal pathspecs: a file named ".e[n]v" must not pull ".env" in as a glob match
+  const env = { ...process.env, GIT_INDEX_FILE: idx, GIT_LITERAL_PATHSPECS: '1' };
   try {
     git(wt, ['read-tree', parent], { env });
-    if (take.length) git(wt, ['add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], { env, input: [...new Set(take)].join('\0') + '\0' });
-    const manifest = ['# Rescued uncommitted work', '', `Worktree: ${path.basename(wt)} on ${git(wt, ['rev-parse', '--abbrev-ref', 'HEAD'])} at ${parent.slice(0, 10)}`, `Rescued: ${now.toISOString()} by mergechaos ${VERSION}`, '',
+    if (take.size) git(wt, ['add', '-A', '--pathspec-from-file=-', '--pathspec-file-nul'], { env, input: [...take].join('\0') + '\0' });
+    const head = git(wt, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    const table = left.map(x => `| ${code(x.path)} | ${x.why} | ${x.size ?? ''} | ${x.sha256 ? code(x.sha256) : ''} |`);
+    const manifest = ['# Rescued uncommitted work', '', `Worktree: ${path.basename(wt)} on ${head} at ${parent.slice(0, 10)}`,
+      `Rescued: ${now.toISOString()} by mergechaos ${VERSION}`, '',
       'Not for a direct merge: cherry-pick only what the owner approves. The working tree was not changed; every file below is still on disk.', '',
-      `Committed: ${new Set(take).size} path(s).`, '', ...(left.length ? ['Left out (still on disk, not in this commit):', '', '| Path | Why | Size | sha256 |', '|---|---|---:|---|', ...left.map(x => `| ${code(x.path)} | ${x.why} | ${x.size ?? ''} | ${x.sha256 ? code(x.sha256) : ''} |`)] : ['Nothing was left out.']), ''].join('\n');
+      `Committed: ${take.size} path(s).`, '',
+      ...(left.length ? ['Left out (still on disk, not in this commit):', '', '| Path | Why | Size | sha256 |', '|---|---|---:|---|', ...table]
+        : ['Nothing was left out.']), ''].join('\n');
     const blob = git(wt, ['hash-object', '-w', '--stdin'], { input: manifest });
     git(wt, ['update-index', '--add', '--cacheinfo', `100644,${blob},.mergechaos/RESCUE.md`], { env });
     const tree = git(wt, ['write-tree'], { env });
     const c = git(wt, ['commit-tree', tree, '-p', parent], { input: `Rescue of uncommitted work in ${path.basename(wt)} (mergechaos), not for direct merge\n` });
     git(wt, ['update-ref', '-m', 'mergechaos rescue', `refs/heads/${branch}`, c, '']);
-    return { branch, commit: c, parent, committed: [...new Set(take)], left };
+    return { branch, commit: c, parent, committed: [...take], left };
   } finally { rmSync(idx, { force: true }); }
 }
 function uniqueBranch(repo, name) {
@@ -480,30 +488,105 @@ function uniqueBranch(repo, name) {
 
 // ---------- land ----------
 
-/** Three-way merge of the base change (old -> new) into a file that holds someone's uncommitted edit. */
-export function mergeIntoDisk(file, oldText, newText) {
-  const snap = readFileSync(file, 'latin1');
-  const nl = snap.split('\n').length - 1, crlf = snap.split('\r\n').length - 1, useCrlf = nl > 0 && crlf * 2 > nl;
-  const lf = t => t.replace(/\r\n/g, '\n');
+const toBuf = x => (Buffer.isBuffer(x) ? x : Buffer.from(String(x)));
+/** CRLF and LF conversions on bytes (latin1 round-trips every byte exactly). */
+const bytesLF = b => Buffer.from(b.toString('latin1').replace(/\r\n/g, '\n'), 'latin1');
+const bytesCRLF = b => Buffer.from(b.toString('latin1').replace(/\n/g, '\r\n'), 'latin1');
+
+/**
+ * Three-way merge of the base change (old -> new) into a file that holds someone's uncommitted edit.
+ * Works on bytes, so any ASCII-compatible encoding (UTF-8, Latin-1, ...) is kept exactly; UTF-16 and binary files
+ * are refused and left untouched. Writes only when the merge is clean and the file did not change meanwhile.
+ */
+export function mergeIntoDisk(file, oldContent, newContent) {
+  const snap = readFileSync(file), oldBuf = toBuf(oldContent), newBuf = toBuf(newContent);
+  if ([snap, oldBuf, newBuf].some(b => utf16Kind(b))) return { ok: false, why: 'UTF-16 text, merge it by hand' };
+  if ([snap, oldBuf, newBuf].some(b => b.includes(0))) return { ok: false, why: 'binary file' };
+  const text = snap.toString('latin1');
+  const nl = text.split('\n').length - 1, crlf = text.split('\r\n').length - 1, useCrlf = nl > 0 && crlf * 2 > nl;
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'mergechaos-'));
   try {
     const [d, o, n] = ['disk', 'old', 'new'].map(k => path.join(tmp, k));
-    writeFileSync(d, lf(readFileSync(file, 'utf8'))); writeFileSync(o, lf(oldText)); writeFileSync(n, lf(newText));
-    const m = spawnSync('git', ['merge-file', '-p', d, o, n], { encoding: 'utf8', maxBuffer: 256 << 20, windowsHide: true });
+    writeFileSync(d, bytesLF(snap)); writeFileSync(o, bytesLF(oldBuf)); writeFileSync(n, bytesLF(newBuf));
+    const m = spawnSync('git', ['merge-file', '-p', d, o, n], { encoding: 'buffer', maxBuffer: 256 << 20, windowsHide: true });
     if (m.status !== 0) return { ok: false, why: m.status > 0 && m.status < 128 ? `${m.status} conflict(s)` : 'merge-file failed' };
-    if (readFileSync(file, 'latin1') !== snap) return { ok: false, why: 'changed on disk while merging' };
-    writeFileSync(file, useCrlf ? m.stdout.replace(/\n/g, '\r\n') : m.stdout);
+    if (!readFileSync(file).equals(snap)) return { ok: false, why: 'changed on disk while merging' };
+    writeFileSync(file, useCrlf ? bytesCRLF(m.stdout) : m.stdout);
     return { ok: true, eol: useCrlf ? 'CRLF' : 'LF' };
   } finally { rmSync(tmp, { recursive: true, force: true }); }
+}
+
+const lstatOrNull = p => { try { return lstatSync(p); } catch { return null; } };
+/** A file or symlink sitting where a parent folder of `rel` should be. */
+function blockedParent(W, rel) {
+  const parts = rel.split('/');
+  for (let i = 1; i < parts.length; i++) {
+    const st = lstatOrNull(path.join(W, ...parts.slice(0, i)));
+    if (st && !st.isDirectory()) return parts.slice(0, i).join('/');
+  }
+  return null;
+}
+const isRegular = mode => mode === '100644' || mode === '100755';
+
+/** Classifies one changed path against the disk of the worktree `W`. */
+function classify(root, W, { st, p, oldMode, newMode }, { OLD, NEW, fileMode }) {
+  const n = git(root, ['rev-parse', '-q', '--verify', `${NEW}:${p}`], { allowFail: true });
+  const o = git(root, ['rev-parse', '-q', '--verify', `${OLD}:${p}`], { allowFail: true });
+  const abs = path.join(W, p), row = { status: st, path: p };
+  const blocked = blockedParent(W, p);
+  if (blocked) return { ...row, kind: 'COLLIDE', reason: `a file or link is in the way: ${blocked}` };
+  if ([oldMode, newMode].some(m => m !== '000000' && !isRegular(m))) return { ...row, kind: 'COLLIDE', reason: 'symlink or submodule' };
+  const ls = lstatOrNull(abs);
+  if (ls && ls.isSymbolicLink()) return { ...row, kind: 'COLLIDE', reason: 'a symlink is on disk' };
+  if (ls && ls.isDirectory()) return { ...row, kind: 'COLLIDE', reason: 'a folder is on disk' };
+  const d = ls ? git(W, ['hash-object', '--', p], { allowFail: true }) : null;
+  if (d === n) {
+    // same content; a pure mode change (exec bit) is applied only where the filesystem tracks it
+    if (ls && n && oldMode !== newMode && fileMode) {
+      const exec = (ls.mode & 0o111) !== 0, wantExec = newMode === '100755';
+      if (exec !== wantExec) return { ...row, kind: 'SAFE', mode: newMode, reason: 'mode change' };
+    }
+    return { ...row, kind: 'EQUAL', ...(oldMode !== newMode && !fileMode ? { reason: 'mode change not applied (filesystem without exec bit)' } : {}) };
+  }
+  if (d === o) return { ...row, kind: 'SAFE' };
+  return { ...row, kind: 'COLLIDE' };
+}
+
+/** `git diff --raw -z` between two commits: status, path and both modes for every changed path. */
+function rawChanges(root, OLD, NEW) {
+  const z = git(root, ['diff', '--raw', '-z', '--no-abbrev', '--no-renames', OLD, NEW]).split('\0').filter(Boolean), out = [];
+  for (let i = 0; i + 1 < z.length; i += 2) {
+    const [oldMode, newMode, , , st] = z[i].replace(/^:/, '').split(' ');
+    out.push({ st: st[0], p: z[i + 1], oldMode, newMode });
+  }
+  return out;
+}
+
+/** Puts the index entries of collisions left on disk back to the old base, so `git diff` shows exactly the owner's edit. */
+function restoreIndexEntries(W, root, OLD, paths) {
+  const removals = [], adds = [];
+  for (const p of paths) {
+    const ls = git(root, ['ls-tree', '-z', OLD, '--', p]).replace(/\0$/, '');
+    if (ls) { const [meta] = ls.split('\t'); const [mode, , sha] = meta.split(' '); adds.push(`${mode},${sha},${p}`); } else removals.push(p);
+  }
+  for (const p of removals) gitRaw(W, ['update-index', '--force-remove', '--', p]);
+  for (const a of adds) {
+    const p = a.slice(a.indexOf(',', a.indexOf(',') + 1) + 1);
+    // a NEW entry under p/ would block the old file entry: drop those first
+    for (const under of lines(git(W, ['ls-files', '--', `${p}/`], { allowFail: true }) || '')) gitRaw(W, ['update-index', '--force-remove', '--', under]);
+    gitRaw(W, ['update-index', '--add', '--cacheinfo', a]);
+  }
 }
 
 /**
  * Moves `base` from `old` to `new` (a fast-forward to the tested integration commit) and brings the working tree that
  * has `base` checked out in line, path by path:
  *   EQUAL    the disk already holds the new content: nothing to write
- *   SAFE     the disk still holds the old base content: written from the new commit
- *   COLLIDE  the disk holds someone's uncommitted edit: the base change is merged three-way into it when clean,
- *            otherwise the file is left exactly as it is and reported
+ *   SAFE     the disk still holds the old base content (and no file blocks its folder): written from the new commit
+ *   COLLIDE  anything else (someone's uncommitted edit, a file in the way, a symlink, a submodule): the base change is
+ *            merged three-way into an edited text file when that merges cleanly; otherwise the path is left exactly as it
+ *            is on disk, its index entry goes back to the old base, and it is listed as unresolved
+ * Classification is repeated right before writing; a concurrent editor can still race the final write.
  */
 export function land({ repo, base, oldRef, newRef, dryRun = false, mergeCollisions = true }) {
   const root = mainRoot(repo);
@@ -514,30 +597,33 @@ export function land({ repo, base, oldRef, newRef, dryRun = false, mergeCollisio
   const wt = worktrees(root).find(w => w.branch === base && existsSync(w.path));
   if (!wt) {
     if (!dryRun) git(root, ['update-ref', '-m', `mergechaos land: ${base} -> ${newRef}`, `refs/heads/${base}`, NEW, OLD]);
-    return { base, old: OLD, new: NEW, worktree: null, table: [], moved: !dryRun };
+    return { base, old: OLD, new: NEW, worktree: null, table: [], moved: !dryRun, collisions: [], unresolved: [] };
   }
   const W = wt.path;
   if (gitRaw(W, ['diff', '--cached', '--quiet']).status !== 0) return { stopped: `something is staged in ${W}: the owner commits or unstages it first` };
   if (refExists(W, 'MERGE_HEAD') || refExists(W, 'REBASE_HEAD') || refExists(W, 'CHERRY_PICK_HEAD')) return { stopped: `a merge, rebase or cherry-pick is in progress in ${W}` };
-  const z = git(root, ['diff', '--name-status', '--no-renames', '-z', OLD, NEW]).split('\0').filter(Boolean);
-  const table = [];
-  for (let i = 0; i + 1 < z.length; i += 2) {
-    const st = z[i][0], p = z[i + 1];
-    const n = git(root, ['rev-parse', '-q', '--verify', `${NEW}:${p}`], { allowFail: true });
-    const o = git(root, ['rev-parse', '-q', '--verify', `${OLD}:${p}`], { allowFail: true });
-    const abs = path.join(W, p);
-    let d = null, kind;
-    if (existsSync(abs)) d = statSync(abs).isDirectory() ? 'dir' : git(W, ['hash-object', '--', p], { allowFail: true });
-    if (d === n) kind = 'EQUAL'; else if (d === o) kind = 'SAFE'; else kind = 'COLLIDE';
-    table.push({ kind, status: st, path: p });
-  }
+  const ctx = { OLD, NEW, fileMode: git(W, ['config', '--bool', 'core.filemode'], { allowFail: true }) !== 'false' && process.platform !== 'win32' };
+  const changes = rawChanges(root, OLD, NEW);
+  const table = changes.map(c => classify(root, W, c, ctx));
   if (dryRun) return { base, old: OLD, new: NEW, worktree: W, table, dryRun: true };
+  // second look right before writing: anything that changed since the first pass becomes COLLIDE
+  changes.forEach((c, i) => {
+    if (table[i].kind !== 'SAFE') return;
+    const again = classify(root, W, c, ctx);
+    if (again.kind !== 'SAFE') table[i] = { ...again, kind: 'COLLIDE', reason: again.reason || 'changed on disk during landing' };
+  });
   const safe = table.filter(t => t.kind === 'SAFE');
-  const write = safe.filter(t => t.status !== 'D').map(t => t.path);
+  const write = safe.filter(t => t.status !== 'D' && !t.mode).map(t => t.path);
   if (write.length) {
-    const idx = path.join(path.resolve(W, git(W, ['rev-parse', '--git-dir'])), `mergechaos-land-${process.pid}.idx`), env = { ...process.env, GIT_INDEX_FILE: idx };
-    try { git(W, ['read-tree', NEW], { env }); git(W, ['checkout-index', '-f', '-z', '--stdin'], { env, input: write.join('\0') + '\0' }); } finally { rmSync(idx, { force: true }); }
+    const idx = path.join(path.resolve(W, git(W, ['rev-parse', '--git-dir'])), `mergechaos-land-${process.pid}.idx`);
+    const env = { ...process.env, GIT_INDEX_FILE: idx };
+    try {
+      // every path here was verified twice: the disk holds the old blob (or nothing) and no file blocks its folders
+      git(W, ['read-tree', NEW], { env });
+      git(W, ['checkout-index', '-f', '-z', '--stdin'], { env, input: write.join('\0') + '\0' });
+    } finally { rmSync(idx, { force: true }); }
   }
+  for (const t of safe.filter(x => x.mode)) chmodSync(path.join(W, t.path), t.mode === '100755' ? 0o755 : 0o644);
   for (const t of safe.filter(x => x.status === 'D')) { try { unlinkSync(path.join(W, t.path)); } catch { /* already gone */ } }
   git(root, ['update-ref', '-m', `mergechaos land: ${base} -> ${newRef}`, `refs/heads/${base}`, NEW, OLD]);
   // the shared index follows the ref (two-tree read-tree: no -u, the working tree stays as it is)
@@ -545,31 +631,41 @@ export function land({ repo, base, oldRef, newRef, dryRun = false, mergeCollisio
   gitRaw(W, ['update-index', '-q', '--refresh']);
   const collisions = [];
   for (const t of table.filter(x => x.kind === 'COLLIDE')) {
+    if (t.reason) { collisions.push({ ...t, result: `left as is: ${t.reason}` }); continue; }
     if (!mergeCollisions) { collisions.push({ ...t, result: 'left as is' }); continue; }
-    if (t.status !== 'M' || !existsSync(path.join(W, t.path))) { collisions.push({ ...t, result: 'left as is (added or deleted on one side)' }); continue; }
-    const r = mergeIntoDisk(path.join(W, t.path), gitRaw(root, ['show', `${OLD}:${t.path}`]).stdout, gitRaw(root, ['show', `${NEW}:${t.path}`]).stdout);
+    if (t.status !== 'M' || !existsSync(path.join(W, t.path))) { collisions.push({ ...t, result: 'left as is: added or deleted on one side' }); continue; }
+    const show = c => gitRaw(root, ['show', `${c}:${t.path}`], { encoding: 'buffer' }).stdout;
+    const r = mergeIntoDisk(path.join(W, t.path), show(OLD), show(NEW));
     collisions.push({ ...t, result: r.ok ? `merged into the uncommitted edit (${r.eol})` : `left as is: ${r.why}` });
   }
+  const unresolved = collisions.filter(c => c.result.startsWith('left')).map(c => c.path);
+  if (unresolved.length) restoreIndexEntries(W, root, OLD, unresolved);
   gitRaw(W, ['update-index', '-q', '--refresh']);
-  return { base, old: OLD, new: NEW, worktree: W, table, wrote: write.length, deleted: safe.length - write.length, collisions, moved: true,
-    unresolved: collisions.filter(c => c.result.startsWith('left')).map(c => c.path), statusAfter: (statusEntries(W) || []).length };
+  return {
+    base, old: OLD, new: NEW, worktree: W, table, wrote: write.length, deleted: safe.filter(t => t.status === 'D').length, collisions, moved: true,
+    unresolved, statusAfter: (statusEntries(W) || []).length,
+  };
 }
 
 // ---------- archive ----------
 
-/** Tags each branch as archive/<branch> and removes the branch ref. Commits stay reachable; nothing is lost. */
+/** Tags each branch as archive/<branch> and removes the branch ref. Commits stay reachable; nothing is deleted from history. */
 export function archive(repo, branches, { prefix = 'archive/', keepBranch = false } = {}) {
   const root = mainRoot(repo), out = [];
   for (const b of branches) {
-    const sha = git(root, ['rev-parse', '--verify', '-q', `refs/heads/${b}`], { allowFail: true });
-    if (!sha) { out.push({ branch: b, skipped: 'no such branch' }); continue; }
-    const wt = worktrees(root).find(w => w.branch === b);
-    if (wt && !keepBranch) { out.push({ branch: b, skipped: `checked out in ${wt.path}` }); continue; }
-    let tag = `${prefix}${b}`, i = 2;
-    while (refExists(root, `refs/tags/${tag}`) && git(root, ['rev-parse', `refs/tags/${tag}^{commit}`]) !== sha) tag = `${prefix}${b}-${i++}`;
-    if (!refExists(root, `refs/tags/${tag}`)) git(root, ['tag', '-a', '-m', `Archived by mergechaos: ${b}`, tag, sha]);
-    if (!keepBranch) git(root, ['update-ref', '-d', `refs/heads/${b}`, sha]);
-    out.push({ branch: b, tag, commit: sha.slice(0, 10), removed: !keepBranch });
+    try {
+      const sha = git(root, ['rev-parse', '--verify', '-q', `refs/heads/${b}`], { allowFail: true });
+      if (!sha) { out.push({ branch: b, skipped: 'no such branch' }); continue; }
+      const wt = worktrees(root).find(w => w.branch === b);
+      if (wt && !keepBranch) { out.push({ branch: b, skipped: `checked out in ${wt.path}` }); continue; }
+      let tag = `${prefix}${b}`, i = 2;
+      while (refExists(root, `refs/tags/${tag}`) && git(root, ['rev-parse', `refs/tags/${tag}^{commit}`]) !== sha) tag = `${prefix}${b}-${i++}`;
+      if (!refExists(root, `refs/tags/${tag}`)) git(root, ['tag', '-a', '-m', `Archived by mergechaos: ${b}`, tag, sha]);
+      if (!keepBranch) git(root, ['update-ref', '-d', `refs/heads/${b}`, sha]);
+      out.push({ branch: b, tag, commit: sha.slice(0, 10), removed: !keepBranch });
+    } catch (e) {
+      out.push({ branch: b, skipped: `error, branch kept: ${String(e.message).split('\n')[0]}` });
+    }
   }
   return out;
 }
@@ -639,7 +735,8 @@ export function main(argv = process.argv.slice(2)) {
     const k = t => r.table.filter(x => x.kind === t).length;
     out(o, r, [`${o['dry-run'] ? 'Dry run: ' : ''}${r.base} ${r.old.slice(0, 10)} -> ${r.new.slice(0, 10)}${r.worktree ? ` (working tree ${r.worktree})` : ' (not checked out anywhere: ref only)'}`,
       `paths: EQUAL ${k('EQUAL')}, SAFE ${k('SAFE')}, COLLIDE ${k('COLLIDE')}`, ...r.table.filter(x => x.kind !== 'EQUAL').map(x => `  ${x.kind}\t${x.status}\t${x.path}`),
-      ...(r.collisions || []).map(c => `  ${c.path}: ${c.result}`), r.unresolved?.length ? `Unresolved collisions (left exactly as they were): ${r.unresolved.join(', ')}` : null].filter(Boolean).join('\n'));
+      ...(r.collisions || []).map(c => `  ${c.path}: ${c.result}`), r.unresolved?.length ? `Unresolved collisions, files left exactly as they were on disk: ${r.unresolved.join(', ')}
+Their index entries point at the old base: git diff shows the owner's edit, git diff --cached shows the landed change that the disk copy still lacks. Bring it in by hand before committing these files.` : null].filter(Boolean).join('\n'));
     return r.unresolved?.length ? 7 : 0;
   }
   if (cmd === 'archive') {
