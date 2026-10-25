@@ -11,7 +11,7 @@ Repositories: 1. Unmerged branches: 4. Without a current premerge report: 2.
 ## acme-shop
 
 - Path: `~/work/acme-shop`
-- Base `main` at `0f96904ec0`; no production branch
+- Base `main` at `912e2d1876`; no production branch
 
 | Worktree | Branch | State | Uncommitted | Last edit | By folder |
 |---|---|---|---:|---|---|
@@ -20,42 +20,42 @@ Repositories: 1. Unmerged branches: 4. Without a current premerge report: 2.
 
 | Branch | Last commit | Ahead/behind | Predicted conflicts | Premerge report (why) |
 |---|---|---|---|---|
-| `agent-b/checkout` | <time> | 4/2 | none | The checkout page shows the order summary; the shop now sells in USD. |
 | `agent-c/theme` | <time> | 1/0 | none | **missing** |
+| `agent-b/checkout` | <time> | 4/2 | none | The checkout page shows the order summary; the shop now sells in USD. |
 | `agent-d/typo` (already in base) | <time> | 1/2 | none | **missing** |
 | `agent-a/cart` | <time> | 2/2 | none | Customers must see the real cart total before checkout. |
 
 **Files changed by several branches:**
+- `src/shared.js`: `agent-c/theme`, `agent-b/checkout`
 - `src/cart.js`: `agent-b/checkout`, `agent-a/cart`
-- `src/shared.js`: `agent-b/checkout`, `agent-c/theme`
 
 **Predicted conflicts between branches** (git merge-tree):
 - `agent-b/checkout` and `agent-c/theme`: `src/shared.js`
 
-<details><summary><code>agent-b/checkout</code>: 4 commit(s)</summary>
+<details><summary><code>agent-c/theme</code>: 1 commit(s)</summary>
 
-- `b71dd6e` <time> docs(premerge): report for agent-b/checkout (1 files)
-- `b758a79` <time> Checkout summary in USD (2 files)
-- `b810659` <time> docs(premerge): report for agent-a/cart (1 files)
-- `01549cb` <time> Cart total from price and quantity (1 files)
+- `82b3ce6` <time> Dark theme for the UK store (1 files)
 
 </details>
 
-<details><summary><code>agent-c/theme</code>: 1 commit(s)</summary>
+<details><summary><code>agent-b/checkout</code>: 4 commit(s)</summary>
 
-- `9bdb9cd` <time> Dark theme for the UK store (1 files)
+- `a0aba10` <time> docs(premerge): report for agent-b/checkout (1 files)
+- `014ca11` <time> Checkout summary in USD (2 files)
+- `6724f25` <time> docs(premerge): report for agent-a/cart (1 files)
+- `652e50f` <time> Cart total from price and quantity (1 files)
 
 </details>
 
 <details><summary><code>agent-d/typo</code>: 1 commit(s)</summary>
 
-- `69c0634` <time> Fix the shop title typo (1 files)
+- `394b1c0` <time> Fix the shop title typo (1 files)
 
 </details>
 
 <details><summary><code>agent-a/cart</code>: 2 commit(s)</summary>
 
-- `b810659` <time> docs(premerge): report for agent-a/cart (1 files)
-- `01549cb` <time> Cart total from price and quantity (1 files)
+- `6724f25` <time> docs(premerge): report for agent-a/cart (1 files)
+- `652e50f` <time> Cart total from price and quantity (1 files)
 
 </details>

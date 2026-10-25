@@ -133,13 +133,19 @@ test('end to end on acme-shop: inventory, plan, integrate with a conflict, rescu
     assert.deepEqual(Object.fromEntries(dry.table.map(t => [t.path, t.kind])),
       { 'docs/premerge/agent-a_cart.md': 'SAFE', 'docs/premerge/agent-b_checkout.md': 'SAFE', 'src/cart.js': 'COLLIDE', 'src/checkout.js': 'SAFE', 'src/shared.js': 'SAFE' });
     assert.equal(g('rev-parse', 'main'), plan.repos[0].baseTip, 'dry run moves nothing');
-    const landed = land({ repo: dir, base: 'main', oldRef: plan.repos[0].baseTip, newRef: second.branch });
+    assert.equal(dry.wouldRefuse, true);
+    const cartBefore = readFileSync(join(dir, 'src/cart.js'), 'utf8');
+    const refused = land({ repo: dir, base: 'main', oldRef: plan.repos[0].baseTip, newRef: second.branch });
+    assert.equal(refused.refused, true); assert.deepEqual(refused.collisions.map(c => c.path), ['src/cart.js']);
+    assert.equal(g('rev-parse', 'main'), plan.repos[0].baseTip, 'a refused landing moves nothing');
+    assert.equal(readFileSync(join(dir, 'src/cart.js'), 'utf8'), cartBefore);
+    const landed = land({ repo: dir, base: 'main', oldRef: plan.repos[0].baseTip, newRef: second.branch, allowCollisions: true });
     assert.equal(g('rev-parse', 'main'), second.tip);
     assert.deepEqual(landed.unresolved, []);
     assert.equal(readFileSync(join(dir, 'src/cart.js'), 'utf8'), 'export function total(items) {\n  return items.reduce((sum, i) => sum + i.price * i.qty, 0);\n}\n\nexport const freeShippingFrom = 50;\n', 'base change merged into the live edit');
     assert.equal(g('status', '--porcelain'), ' M src/cart.js', 'only the live edit remains uncommitted');
     assert.equal(g('diff', '--cached', '--name-only'), '');
-    const stale = land({ repo: dir, base: 'main', oldRef: plan.repos[0].baseTip, newRef: second.branch });
+    const stale = land({ repo: dir, base: 'main', oldRef: plan.repos[0].baseTip, newRef: second.branch, allowCollisions: true });
     assert.match(stale.stopped, /moved since the plan/);
 
     // archive the rescue branch and the ARCHIVE verdict
@@ -152,7 +158,33 @@ test('end to end on acme-shop: inventory, plan, integrate with a conflict, rescu
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('land: SAFE writes and deletes, EQUAL skips, a conflicting COLLIDE is left exactly as it was (exit 7)', () => {
+test('land refuses by default when a path collides: nothing written, no ref moved (exit 7)', () => {
+  const { d, g, OLD } = landable(dd => { write(dd, 'a.txt', 'a1\n'); write(dd, 'c.txt', 'c1\nc2\nc3\n'); write(dd, 'e.txt', 'e\n'); },
+    (dd, gg) => { write(dd, 'a.txt', 'A1\n'); write(dd, 'c.txt', 'C1\nc2\nc3\n'); gg('rm', '-q', 'e.txt'); });
+  try {
+    write(d, 'c.txt', 'c1\nc2\nc3 mine\n');
+    const status = g('status', '--porcelain');
+    const dry = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x', '--dry-run');
+    assert.equal(dry.status, 0, dry.stdout + dry.stderr); assert.match(dry.stdout, /a real run refuses: 1 path/);
+    const out = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x');
+    assert.equal(out.status, 7, out.stdout + out.stderr);
+    assert.match(out.stdout, /REFUSED: 1 path\(s\) collide/); assert.match(out.stdout, /COLLIDE\tM\tc\.txt/);
+    assert.match(out.stdout, /commit or stash the edits/); assert.match(out.stdout, /--allow-collisions/);
+    assert.equal(g('rev-parse', 'main'), OLD, 'the base did not move');
+    assert.equal(readFileSync(join(d, 'a.txt'), 'utf8'), 'a1\n', 'SAFE paths are not written either');
+    assert.ok(existsSync(join(d, 'e.txt')));
+    assert.equal(readFileSync(join(d, 'c.txt'), 'utf8'), 'c1\nc2\nc3 mine\n');
+    assert.equal(g('status', '--porcelain'), status, 'index and working tree unchanged');
+    assert.equal(run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x', '--no-merge-collisions').status, 2,
+      '--no-merge-collisions needs --allow-collisions');
+    g('stash', '-q');
+    const again = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x');
+    assert.equal(again.status, 0, 'after the owner stashes, the same command lands');
+    assert.equal(g('rev-parse', 'main'), g('rev-parse', 'merge/x'));
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('land --allow-collisions: SAFE writes and deletes, EQUAL skips, a conflicting COLLIDE is left as it was (exit 8)', () => {
   const d = temp();
   try {
     const g = initRepo(d);
@@ -166,8 +198,8 @@ test('land: SAFE writes and deletes, EQUAL skips, a conflicting COLLIDE is left 
     write(d, 'b.txt', 'B1\nb2\nb3\n');            // disk already has the new content
     write(d, 'c.txt', 'c1\nc2\nc3 mine\n');       // someone's edit, mergeable
     write(d, 'd.txt', 'd1 mine\nd2\nd3\n');       // someone's edit on the same line: conflict
-    const out = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x');
-    assert.equal(out.status, 7, out.stderr + out.stdout);
+    const out = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x', '--allow-collisions');
+    assert.equal(out.status, 8, out.stderr + out.stdout);
     assert.match(out.stdout, /EQUAL 1, SAFE 2, COLLIDE 2/);
     assert.equal(readFileSync(join(d, 'a.txt'), 'utf8'), 'A1\na2\na3\n');
     assert.ok(!existsSync(join(d, 'e.txt')));
@@ -175,8 +207,9 @@ test('land: SAFE writes and deletes, EQUAL skips, a conflicting COLLIDE is left 
     assert.equal(readFileSync(join(d, 'd.txt'), 'utf8'), 'd1 mine\nd2\nd3\n');
     assert.equal(g('status', '--porcelain'), ' M c.txt\nMM d.txt', 'd.txt: index back at the old base, the disk keeps the edit');
     assert.match(g('diff', '--', 'd.txt'), /^-d1\n\+d1 mine/m, 'git diff shows exactly the owner edit');
-    assert.match(g('diff', '--cached', '--', 'd.txt'), /^\+d1\n/m, 'git diff --cached shows the landed change the copy lacks');
-    assert.match(out.stdout, /Unresolved collisions.*d\.txt/);
+    assert.match(g('diff', '--cached', '--', 'd.txt'), /^-D1\n\+d1\n/m, 'git diff --cached shows the revert a commit would record');
+    assert.match(out.stdout, /WARNING: unresolved collisions.*d\.txt/);
+    assert.match(out.stdout, /a plain git commit in .* records a REVERT/);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
@@ -244,24 +277,29 @@ function landable(setupBase, setupNew) {
   return { d, g, OLD };
 }
 
-test('land: an untracked file where the new commit needs a folder is never replaced (COLLIDE, exit 7)', () => {
+test('land: an untracked file where the new commit needs a folder is never replaced (COLLIDE: refused, then kept)', () => {
   const { d, g, OLD } = landable(dd => write(dd, 'a.txt', 'a\n'), dd => write(dd, 'docs/x.md', 'new\n'));
   try {
     write(d, 'docs', 'MY UNCOMMITTED NOTES\n');
-    const out = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x');
-    assert.equal(out.status, 7, out.stdout + out.stderr);
+    const refused = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x');
+    assert.equal(refused.status, 7, refused.stdout + refused.stderr); assert.equal(g('rev-parse', 'main'), OLD);
+    assert.match(refused.stdout, /a file or link is in the way: docs/);
+    const out = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x', '--allow-collisions');
+    assert.equal(out.status, 8, out.stdout + out.stderr);
     assert.match(out.stdout, /COLLIDE\tA\tdocs\/x\.md/); assert.match(out.stdout, /a file or link is in the way: docs/);
     assert.equal(readFileSync(join(d, 'docs'), 'utf8'), 'MY UNCOMMITTED NOTES\n');
     assert.equal(g('rev-parse', 'main'), g('rev-parse', 'merge/x'), 'the base still lands');
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
-test('land: a tracked file with an uncommitted edit that the new commit turns into a folder is kept (COLLIDE, exit 7)', () => {
+test('land: a tracked file with an uncommitted edit that the new commit turns into a folder is kept (COLLIDE: refused, then kept)', () => {
   const { d, g, OLD } = landable(dd => write(dd, 'docs', 'v1\n'), (dd, gg) => { gg('rm', '-q', 'docs'); write(dd, 'docs/x.md', 'new\n'); });
   try {
     write(d, 'docs', 'v1\nMY UNCOMMITTED EDIT\n');
-    const out = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x');
-    assert.equal(out.status, 7, out.stdout + out.stderr);
+    assert.equal(run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x').status, 7);
+    assert.equal(readFileSync(join(d, 'docs'), 'utf8'), 'v1\nMY UNCOMMITTED EDIT\n');
+    const out = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x', '--allow-collisions');
+    assert.equal(out.status, 8, out.stdout + out.stderr);
     assert.equal(readFileSync(join(d, 'docs'), 'utf8'), 'v1\nMY UNCOMMITTED EDIT\n', 'the edit survives');
     assert.match(g('diff', '--', 'docs'), /^\+MY UNCOMMITTED EDIT/m, 'git diff shows the edit against the old file');
   } finally { rmSync(d, { recursive: true, force: true }); }
@@ -288,7 +326,7 @@ test('land: a Latin-1 collision is merged without touching the owner bytes', () 
   const { d, g, OLD } = landable(dd => writeFileSync(join(dd, 'f.txt'), L('l1\nl2\nl3\n')), dd => writeFileSync(join(dd, 'f.txt'), L('L1\nl2\nl3\n')));
   try {
     writeFileSync(join(d, 'f.txt'), L('l1\nl2\nl3 caf\xe9 \xb1\n'));
-    const out = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x');
+    const out = run('land', '--repo', d, '--base', 'main', '--old', OLD, '--new', 'merge/x', '--allow-collisions');
     assert.equal(out.status, 0, out.stdout + out.stderr);
     assert.ok(readFileSync(join(d, 'f.txt')).equals(L('L1\nl2\nl3 caf\xe9 \xb1\n')));
     assert.equal(g('rev-parse', 'main'), g('rev-parse', 'merge/x'));

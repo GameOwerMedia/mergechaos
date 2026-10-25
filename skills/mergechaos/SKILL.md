@@ -45,14 +45,18 @@ For every ASK and ARCHIVE verdict, and anything that touches a production branch
 For every **stale** worktree: `mergechaos rescue --worktree <dir>`. It commits all uncommitted work (edits, deletions, untracked files) onto `rescue/<worktree>/<date>` through a temporary index, with a manifest `.mergechaos/RESCUE.md`. The worktree, its index and its HEAD do not change. Well-known private file names, contents that look like credentials (best effort) and files above `--max-mb` stay out and are listed by path, size and hash, never by content. A **live** worktree is reported, never rescued: its owner commits and writes a report.
 
 ### 7. Land (only with the user's go-ahead)
-`mergechaos land --repo <dir> --base <base> --old <recorded base tip> --new merge/<stamp> [--dry-run]`
+`mergechaos land --repo <dir> --base <base> --old <recorded base tip> --new merge/<stamp> [--dry-run] [--allow-collisions]`
 
 Guards: the base still points at `--old` (otherwise merge the new base commits into the integration branch, retest, and update `--old`), the integration commit contains the base, nothing is staged and no merge is in progress in the worktree that has the base checked out. Then every path that changes is classified:
 - **EQUAL**: the disk already holds the new content; nothing is written.
 - **SAFE**: the disk still holds the old base content and no file blocks its folders; the new content is written.
-- **COLLIDE**: anything else (an uncommitted edit, a file in the way of a new folder, a symlink, a submodule). For an edited text file the base change is merged three-way into the edit, byte for byte, when it merges cleanly; otherwise the path is left exactly as it is on disk and listed (exit 7), with its index entry back at the old base. Tell the owner: `git diff` shows their edit, `git diff --cached` the landed change their copy lacks.
+- **COLLIDE**: anything else (an uncommitted edit, a file in the way of a new folder, a symlink, a submodule).
 
-The base ref moves atomically (old-value check) and the worktree's index follows it without touching any other file. If the base is not checked out anywhere, only the ref moves. Always run `--dry-run` first and show the table. Never push and never deploy as part of this flow; those are separate decisions of the user.
+By default one COLLIDE path refuses the landing (exit 7): nothing is written and the base does not move. Show the user the paths and ask the owner of that worktree to commit or stash those edits (or move away what is in the way), then run the same command again. This is the normal path.
+
+`--allow-collisions` lands anyway, only when the user explicitly accepts unresolved paths. SAFE paths are written and the base moves. For an edited text file the base change is merged three-way into the edit, byte for byte, when it merges cleanly. Every other COLLIDE path is left exactly as it is on disk (exit 8) with its index entry back at the old base. Tell the owner plainly: until they resolve those files, a plain `git commit` in that worktree records a revert of the landed change on them. `git diff` shows their edit; `git diff --cached -R -- <path>` is the landed change to bring in by hand before committing.
+
+The base ref moves atomically (old-value check) and the worktree's index follows it without touching any other file. If the base is not checked out anywhere, only the ref moves. Always run `--dry-run` first and show the table; it also says whether a real run would refuse. Never push and never deploy as part of this flow; those are separate decisions of the user.
 
 ### 8. Archive and finish
 `mergechaos archive --repo <dir> --branch <rescue branches and ARCHIVE verdicts>` tags each as `archive/<branch>` and removes the branch ref; the commits stay reachable. Remove the integration worktree (`git worktree remove <run>/wt/<repo>`) and delete `merge/<stamp>` once the base points at it. `git worktree prune` only for worktrees the user confirmed as gone.
@@ -60,7 +64,8 @@ The base ref moves atomically (old-value check) and the worktree's index follows
 Finish with a short account per repository: merged, archived, rescued, waiting (ASK), unresolved collisions, tests run, and the open questions. The flow ends here.
 
 ## Hard rules
-- Never `checkout`, `stash`, `reset`, `clean` or `rebase` in a working tree that someone else may be using. The tool only writes to the integration worktree, to new branch refs, and, during `land`, to SAFE paths and clean COLLIDE merges.
+- Never `checkout`, `stash`, `reset`, `clean` or `rebase` in a working tree that someone else may be using. The tool only writes to the integration worktree, to new branch refs, and, during `land`, to SAFE paths (and, only with `--allow-collisions`, to clean three-way merges into edited files).
+- Never pass `--allow-collisions` on your own; it needs the user's explicit yes after they have seen the colliding paths.
 - Never take another session's uncommitted hunks into a merge. Rescue them to a rescue branch; cherry-pick from there only what the owner approves.
 - Do not kill processes or close other sessions.
 - Real merge commits; no history rewriting of shared branches.

@@ -65,7 +65,7 @@ export function mainRoot(dir) {
 const position = (cwd, a, b) => { const [behind, ahead] = git(cwd, ['rev-list', '--left-right', '--count', `${a}...${b}`]).split(/\s+/).map(Number); return { ahead, behind }; };
 
 const REPEATABLE = new Set(['repo', 'branch']);
-const BOOLEAN = new Set(['json', 'dry-run', 'no-merge-collisions', 'keep-branch', 'help', 'version']);
+const BOOLEAN = new Set(['allow-collisions', 'json', 'dry-run', 'no-merge-collisions', 'keep-branch', 'help', 'version']);
 export function parseArgs(argv) {
   const o = { _: [] };
   for (let i = 0; i < argv.length; i++) {
@@ -583,12 +583,14 @@ function restoreIndexEntries(W, root, OLD, paths) {
  * has `base` checked out in line, path by path:
  *   EQUAL    the disk already holds the new content: nothing to write
  *   SAFE     the disk still holds the old base content (and no file blocks its folder): written from the new commit
- *   COLLIDE  anything else (someone's uncommitted edit, a file in the way, a symlink, a submodule): the base change is
- *            merged three-way into an edited text file when that merges cleanly; otherwise the path is left exactly as it
- *            is on disk, its index entry goes back to the old base, and it is listed as unresolved
+ *   COLLIDE  anything else (someone's uncommitted edit, a file in the way, a symlink, a submodule)
+ * By default any COLLIDE path refuses the landing: nothing is written and the ref does not move (`refused`).
+ * With allowCollisions the SAFE paths land anyway; the base change is merged three-way into an edited text file when
+ * that merges cleanly, otherwise the path is left exactly as it is on disk, its index entry goes back to the old base,
+ * and it is listed as unresolved.
  * Classification is repeated right before writing; a concurrent editor can still race the final write.
  */
-export function land({ repo, base, oldRef, newRef, dryRun = false, mergeCollisions = true }) {
+export function land({ repo, base, oldRef, newRef, dryRun = false, allowCollisions = false, mergeCollisions = true }) {
   const root = mainRoot(repo);
   const OLD = git(root, ['rev-parse', `${oldRef}^{commit}`]), NEW = git(root, ['rev-parse', `${newRef}^{commit}`]);
   const tip = git(root, ['rev-parse', `refs/heads/${base}`]);
@@ -605,13 +607,17 @@ export function land({ repo, base, oldRef, newRef, dryRun = false, mergeCollisio
   const ctx = { OLD, NEW, fileMode: git(W, ['config', '--bool', 'core.filemode'], { allowFail: true }) !== 'false' && process.platform !== 'win32' };
   const changes = rawChanges(root, OLD, NEW);
   const table = changes.map(c => classify(root, W, c, ctx));
-  if (dryRun) return { base, old: OLD, new: NEW, worktree: W, table, dryRun: true };
+  const refuse = () => ({ refused: true, base, old: OLD, new: NEW, worktree: W, table, collisions: table.filter(t => t.kind === 'COLLIDE') });
+  const colliding = table.some(t => t.kind === 'COLLIDE');
+  if (dryRun) return { base, old: OLD, new: NEW, worktree: W, table, dryRun: true, wouldRefuse: colliding && !allowCollisions };
+  if (colliding && !allowCollisions) return refuse();
   // second look right before writing: anything that changed since the first pass becomes COLLIDE
   changes.forEach((c, i) => {
     if (table[i].kind !== 'SAFE') return;
     const again = classify(root, W, c, ctx);
     if (again.kind !== 'SAFE') table[i] = { ...again, kind: 'COLLIDE', reason: again.reason || 'changed on disk during landing' };
   });
+  if (!allowCollisions && table.some(t => t.kind === 'COLLIDE')) return refuse();
   const safe = table.filter(t => t.kind === 'SAFE');
   const write = safe.filter(t => t.status !== 'D' && !t.mode).map(t => t.path);
   if (write.length) {
@@ -678,7 +684,7 @@ const HELP = `mergechaos ${VERSION}: untangle many branches, worktrees and agent
   mergechaos.mjs plan      --run <run dir> [--json]
   mergechaos.mjs integrate --run <run dir> [--repo <name>]
   mergechaos.mjs rescue    --worktree <dir> [--name rescue/<x>] [--onto <ref>] [--max-mb 1] [--json]
-  mergechaos.mjs land      --repo <dir> --base <branch> --old <sha> --new <ref> [--dry-run] [--no-merge-collisions] [--json]
+  mergechaos.mjs land      --repo <dir> --base <branch> --old <sha> --new <ref> [--dry-run] [--allow-collisions [--no-merge-collisions]] [--json]
   mergechaos.mjs archive   --repo <dir> --branch <b>[,<b>...] [--prefix archive/] [--keep-branch]
 
 Run folder default: $MERGECHAOS_DIR/<stamp> or ~/.mergechaos/runs/<stamp>.`;
@@ -730,14 +736,38 @@ export function main(argv = process.argv.slice(2)) {
   if (cmd === 'land') {
     const repo = (o.repo || [])[0];
     if (!repo || !o.base || !o.old || !o.new) throw usage('land needs --repo, --base, --old and --new');
-    const r = land({ repo: path.resolve(repo), base: o.base, oldRef: o.old, newRef: o.new, dryRun: !!o['dry-run'], mergeCollisions: !o['no-merge-collisions'] });
+    const allow = !!o['allow-collisions'];
+    if (o['no-merge-collisions'] && !allow) throw usage('--no-merge-collisions only applies with --allow-collisions');
+    const r = land({
+      repo: path.resolve(repo), base: o.base, oldRef: o.old, newRef: o.new,
+      dryRun: !!o['dry-run'], allowCollisions: allow, mergeCollisions: !o['no-merge-collisions'],
+    });
     if (r.stopped) { console.error(`STOP: ${r.stopped}`); return 1; }
     const k = t => r.table.filter(x => x.kind === t).length;
-    out(o, r, [`${o['dry-run'] ? 'Dry run: ' : ''}${r.base} ${r.old.slice(0, 10)} -> ${r.new.slice(0, 10)}${r.worktree ? ` (working tree ${r.worktree})` : ' (not checked out anywhere: ref only)'}`,
-      `paths: EQUAL ${k('EQUAL')}, SAFE ${k('SAFE')}, COLLIDE ${k('COLLIDE')}`, ...r.table.filter(x => x.kind !== 'EQUAL').map(x => `  ${x.kind}\t${x.status}\t${x.path}`),
-      ...(r.collisions || []).map(c => `  ${c.path}: ${c.result}`), r.unresolved?.length ? `Unresolved collisions, files left exactly as they were on disk: ${r.unresolved.join(', ')}
-Their index entries point at the old base: git diff shows the owner's edit, git diff --cached shows the landed change that the disk copy still lacks. Bring it in by hand before committing these files.` : null].filter(Boolean).join('\n'));
-    return r.unresolved?.length ? 7 : 0;
+    const where = r.worktree ? ` (working tree ${r.worktree})` : ' (not checked out anywhere: ref only)';
+    const head = [`${o['dry-run'] ? 'Dry run: ' : ''}${r.base} ${r.old.slice(0, 10)} -> ${r.new.slice(0, 10)}${where}`,
+      `paths: EQUAL ${k('EQUAL')}, SAFE ${k('SAFE')}, COLLIDE ${k('COLLIDE')}`,
+      ...r.table.filter(x => x.kind !== 'EQUAL').map(x => `  ${x.kind}\t${x.status}\t${x.path}${x.reason ? ` (${x.reason})` : ''}`)];
+    const todo = [
+      `What to do: in ${r.worktree}, commit or stash the edits on these paths (or move away what is in the way),`,
+      'then run land again with the same --old and --new.',
+      'Or pass --allow-collisions to land the SAFE paths now and leave these paths for their owner to resolve.'];
+    if (r.refused) {
+      const msg = `REFUSED: ${r.collisions.length} path(s) collide with the working tree. Nothing was written and ${r.base} did not move.`;
+      out(o, r, [...head, msg, ...todo].join('\n'));
+      return 7;
+    }
+    if (r.dryRun && r.wouldRefuse) {
+      out(o, r, [...head, `Without --allow-collisions a real run refuses: ${k('COLLIDE')} path(s) collide.`, ...todo].join('\n'));
+      return 0;
+    }
+    const warn = r.unresolved?.length ? [
+      `WARNING: unresolved collisions, files left exactly as they were on disk: ${r.unresolved.join(', ')}`,
+      "Their index entries point at the old base: git diff shows the owner's edit, git diff --cached the revert a commit would record.",
+      `Until these files are resolved, a plain git commit in ${r.worktree} records a REVERT of the landed change on them.`,
+      'Resolve: bring the change in by hand (git diff --cached -R -- <path> is that change as a patch), then git add and commit.'] : [];
+    out(o, r, [...head, ...(r.collisions || []).map(c => `  ${c.path}: ${c.result}`), ...warn].join('\n'));
+    return r.unresolved?.length ? 8 : 0;
   }
   if (cmd === 'archive') {
     const repo = (o.repo || [])[0];

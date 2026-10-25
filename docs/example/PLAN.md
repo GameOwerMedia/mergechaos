@@ -6,14 +6,14 @@ This is a draft. Read every premerge report, then edit `plan.json` (verdict and 
 
 ## acme-shop
 
-Base `main` at `0f96904ec0`; integration branch `merge/<stamp>` in a separate worktree.
+Base `main` at `912e2d1876`; integration branch `merge/<stamp>` in a separate worktree.
 
 | Order | Branch | Verdict | Reason | Conflicts |
 |---:|---|---|---|---|
 | 1 | `agent-a/cart` | **TAKE** | Customers must see the real cart total before checkout. | none |
 | 2 | `agent-b/checkout` | **TAKE** | The checkout page shows the order summary; the shop now sells in USD. | with `agent-c/theme`: `src/shared.js` |
-| 3 | `agent-c/theme` | **ASK** | No premerge report: the purpose of this branch is unknown. Ask its author to write one. | with `agent-b/checkout`: `src/shared.js` |
-| 4 | `agent-d/typo` | **ARCHIVE** | Every commit is already in the base under another hash (git cherry); nothing left to merge. | none |
+| 3 | `agent-d/typo` | **ARCHIVE** | Every commit is already in the base under another hash (git cherry); nothing left to merge. | none |
+| 4 | `agent-c/theme` | **ASK** | No premerge report: the purpose of this branch is unknown. Ask its author to write one. | with `agent-b/checkout`: `src/shared.js` |
 
 **Stale sessions with uncommitted work (rescue before landing):**
 - `~/work/acme-shop-theme` on `agent-c/theme`: 4 change(s), last edit <time>. `mergechaos rescue --repo "~/work/acme-shop" --worktree "~/work/acme-shop-theme"`
@@ -33,6 +33,6 @@ Base `main` at `0f96904ec0`; integration branch `merge/<stamp>` in a separate wo
 ```
 mergechaos integrate --run "~/work/runs/demo"
 # run the tests every report lists inside the integration worktree, review the result, then, with the owner's go-ahead:
-mergechaos land --repo "~/work/acme-shop" --base main --old 0f96904ec094ef7ac00ba679c0ec35f04e19219a --new merge/<stamp>
+mergechaos land --repo "~/work/acme-shop" --base main --old 912e2d1876e76987042ec7a6e71a120e703db27a --new merge/<stamp>
 mergechaos archive --repo "~/work/acme-shop" --branch agent-d/typo,<rescue branches created above>
 ```

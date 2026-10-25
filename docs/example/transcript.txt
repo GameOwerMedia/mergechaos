@@ -17,7 +17,7 @@ $ mergechaos integrate --run ~/work/runs/demo
 acme-shop: merging agent-a/cart
 acme-shop: merging agent-b/checkout
 acme-shop: merging agent-c/theme
-acme-shop: 2 merged on merge/<stamp> at fabd4fec64 (~/work/runs/demo/wt/acme-shop)
+acme-shop: 2 merged on merge/<stamp> at d4a9655adf (~/work/runs/demo/wt/acme-shop)
   STOPPED: conflict merging agent-c/theme
   conflicted: src/shared.js
   resolve in the worktree keeping both sides, git commit --no-edit, then run integrate again
@@ -25,27 +25,47 @@ acme-shop: 2 merged on merge/<stamp> at fabd4fec64 (~/work/runs/demo/wt/acme-sho
 
 #    Resolve src/shared.js keeping both sides (USD from agent-b, dark theme from agent-c), commit, run again
 $ mergechaos integrate --run ~/work/runs/demo
-acme-shop: 0 merged, 3 already in on merge/<stamp> at 85bd8c282d (~/work/runs/demo/wt/acme-shop)
+acme-shop: 0 merged, 3 already in on merge/<stamp> at f8dc3f3b76 (~/work/runs/demo/wt/acme-shop)
 (exit 0)
 
 # 5. Rescue the stale session of agent-c (its worktree stays exactly as it is)
 $ mergechaos rescue --worktree ~/work/acme-shop-theme
-Rescued 3 path(s) to rescue/acme-shop-theme/<date> at 5710d08797; 1 left out (listed in .mergechaos/RESCUE.md). The worktree was not changed.
+Rescued 3 path(s) to rescue/acme-shop-theme/<date> at d2a00e438d; 1 left out (listed in .mergechaos/RESCUE.md). The worktree was not changed.
 (exit 0)
 
-# 6. Land: main moves to the tested merge commit; the live edit in src/cart.js is kept
-$ mergechaos land --repo ~/work/acme-shop --base main --old 0f96904ec094ef7ac00ba679c0ec35f04e19219a --new merge/<stamp> --dry-run
-Dry run: main 0f96904ec0 -> 85bd8c282d (working tree ~/work/acme-shop)
+# 6. Land: main moves to the tested merge commit; a live session is editing src/cart.js in the main worktree
+$ mergechaos land --repo ~/work/acme-shop --base main --old 912e2d1876e76987042ec7a6e71a120e703db27a --new merge/<stamp> --dry-run
+Dry run: main 912e2d1876 -> f8dc3f3b76 (working tree ~/work/acme-shop)
 paths: EQUAL 0, SAFE 4, COLLIDE 1
   SAFE	A	docs/premerge/agent-a_cart.md
   SAFE	A	docs/premerge/agent-b_checkout.md
   COLLIDE	M	src/cart.js
   SAFE	A	src/checkout.js
   SAFE	M	src/shared.js
+Without --allow-collisions a real run refuses: 1 path(s) collide.
+What to do: in ~/work/acme-shop, commit or stash the edits on these paths (or move away what is in the way),
+then run land again with the same --old and --new.
+Or pass --allow-collisions to land the SAFE paths now and leave these paths for their owner to resolve.
 (exit 0)
 
-$ mergechaos land --repo ~/work/acme-shop --base main --old 0f96904ec094ef7ac00ba679c0ec35f04e19219a --new merge/<stamp>
-main 0f96904ec0 -> 85bd8c282d (working tree ~/work/acme-shop)
+#    By default a collision refuses the whole landing: nothing is written, main does not move
+$ mergechaos land --repo ~/work/acme-shop --base main --old 912e2d1876e76987042ec7a6e71a120e703db27a --new merge/<stamp>
+main 912e2d1876 -> f8dc3f3b76 (working tree ~/work/acme-shop)
+paths: EQUAL 0, SAFE 4, COLLIDE 1
+  SAFE	A	docs/premerge/agent-a_cart.md
+  SAFE	A	docs/premerge/agent-b_checkout.md
+  COLLIDE	M	src/cart.js
+  SAFE	A	src/checkout.js
+  SAFE	M	src/shared.js
+REFUSED: 1 path(s) collide with the working tree. Nothing was written and main did not move.
+What to do: in ~/work/acme-shop, commit or stash the edits on these paths (or move away what is in the way),
+then run land again with the same --old and --new.
+Or pass --allow-collisions to land the SAFE paths now and leave these paths for their owner to resolve.
+(exit 7)
+
+#    The owner agrees to land now: --allow-collisions writes the SAFE paths and merges the base change into the edit
+$ mergechaos land --repo ~/work/acme-shop --base main --old 912e2d1876e76987042ec7a6e71a120e703db27a --new merge/<stamp> --allow-collisions
+main 912e2d1876 -> f8dc3f3b76 (working tree ~/work/acme-shop)
 paths: EQUAL 0, SAFE 4, COLLIDE 1
   SAFE	A	docs/premerge/agent-a_cart.md
   SAFE	A	docs/premerge/agent-b_checkout.md
@@ -55,8 +75,8 @@ paths: EQUAL 0, SAFE 4, COLLIDE 1
   src/cart.js: merged into the uncommitted edit (LF)
 (exit 0)
 
-# 7. Archive the rescue branch and the ARCHIVE verdicts (tags, nothing is lost)
+# 7. Archive the rescue branch and the ARCHIVE verdicts (annotated tags keep their commits reachable)
 $ mergechaos archive --repo ~/work/acme-shop --branch rescue/acme-shop-theme/<date>,agent-d/typo
-rescue/acme-shop-theme/<date> -> tag archive/rescue/acme-shop-theme/<date> (5710d08797), branch removed
-agent-d/typo -> tag archive/agent-d/typo (69c0634ef1), branch removed
+rescue/acme-shop-theme/<date> -> tag archive/rescue/acme-shop-theme/<date> (d2a00e438d), branch removed
+agent-d/typo -> tag archive/agent-d/typo (394b1c0179), branch removed
 (exit 0)

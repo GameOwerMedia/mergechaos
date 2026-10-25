@@ -9,7 +9,7 @@
 
 **mergechaos** turns the state many parallel agents leave behind (branches ahead of and behind the base, worktrees, uncommitted files of sessions that died, reports missing or stale) into a fact sheet, a merge plan that asks before it guesses, and a landing on the base branch that writes only paths it has checked against the disk, and leaves everything else as it found it.
 
-<p align="center"><img src="assets/demo.svg" alt="Terminal: inventory and plan of acme-shop, integrate stops on a conflict and resumes after it is resolved, a stale session is rescued, land classifies paths as SAFE and COLLIDE and merges the base change into a live edit, archive tags the leftovers" width="100%"></p>
+<p align="center"><img src="assets/demo.svg" alt="Terminal: inventory and plan of acme-shop, integrate stops on a conflict and resumes after it is resolved, a stale session is rescued, land refuses on a collision with a live edit, then with --allow-collisions merges the base change into it, archive tags the leftovers" width="100%"></p>
 
 The run above is [examples/demo.mjs](examples/demo.mjs) on a throwaway repository. Its generated [MAP.md](docs/example/MAP.md), [PLAN.md](docs/example/PLAN.md) and [full transcript](docs/example/transcript.txt) are in `docs/example/`.
 
@@ -75,7 +75,9 @@ mergechaos plan --run ~/.mergechaos/runs/<stamp>                         # PLAN.
 mergechaos integrate --run ~/.mergechaos/runs/<stamp>                    # merge/<stamp> in <run>/wt/<repo>; run the tests there
 mergechaos rescue --worktree ~/work/acme-shop-theme                      # dead session -> rescue/<name>/<date>
 mergechaos land --repo ~/work/acme-shop --base main --old <baseTip> --new merge/<stamp> --dry-run
-mergechaos land --repo ~/work/acme-shop --base main --old <baseTip> --new merge/<stamp>
+mergechaos land --repo ~/work/acme-shop --base main --old <baseTip> --new merge/<stamp>   # refuses (exit 7) if a path collides
+# the owner commits or stashes the colliding edits, then the same land command; or, knowingly:
+mergechaos land --repo ~/work/acme-shop --base main --old <baseTip> --new merge/<stamp> --allow-collisions
 mergechaos archive --repo ~/work/acme-shop --branch rescue/acme-shop-theme/<date>,agent-d/typo
 ```
 
@@ -105,9 +107,13 @@ The script drafts the plan mechanically and never upgrades ASK to TAKE. The skil
 |---|---|---|
 | **EQUAL** | the new content already | nothing (a pure exec-bit change is applied where the filesystem has one, reported otherwise) |
 | **SAFE** | the old base content, and no file or link sits where one of its folders should be | written from the new commit (temporary index + `checkout-index`), or deleted |
-| **COLLIDE** | anything else: someone's uncommitted edit, a file in the way of a new folder, a symlink, a submodule | for an edited text file (UTF-8 or another ASCII-compatible encoding), the base change is merged three-way into the edit, byte for byte, when it merges cleanly. Otherwise the path is left exactly as it is on disk and listed (exit 7); its index entry goes back to the old base, so `git diff` shows the owner's edit and `git diff --cached` the landed change the copy still lacks |
+| **COLLIDE** | anything else: someone's uncommitted edit, a file in the way of a new folder, a symlink, a submodule | by default: the whole landing is refused (see below) |
 
-The base ref then moves with an old-value check, and the worktree's index follows with a two-tree `read-tree` that does not touch files. If the base is not checked out anywhere, only the ref moves. Every SAFE path is classified a second time right before the write.
+**By default, one COLLIDE path refuses the landing** (exit 7): nothing is written, the index is untouched and the base does not move. The output lists the paths and what to do: the owner of that worktree commits or stashes the edits (or moves away what is in the way), then you run the same `land` command again. `--dry-run` shows the same table and says whether a real run would refuse.
+
+**`--allow-collisions` lands anyway.** The SAFE paths are written and the base moves. For an edited text file (UTF-8 or another ASCII-compatible encoding) the base change is merged three-way into the edit, byte for byte, when it merges cleanly. Every other COLLIDE path is left exactly as it is on disk and listed as unresolved (exit 8), and its index entry goes back to the old base: `git diff` shows the owner's edit, and `git diff --cached` shows the revert of the landed change that a commit would record. **Until those files are resolved, a plain `git commit` in that worktree records a revert of the landed change on them**; the command prints this warning. To resolve, bring the change in by hand (`git diff --cached -R -- <path>` is that change as a patch), `git add`, then commit. `--no-merge-collisions` (only with `--allow-collisions`) skips the three-way merge and leaves every COLLIDE path unresolved.
+
+The base ref moves with an old-value check, and the worktree's index follows with a two-tree `read-tree` that does not touch files. If the base is not checked out anywhere, only the ref moves. Every SAFE path is classified a second time right before the write; a path that changed in between becomes COLLIDE, which refuses the landing without `--allow-collisions`.
 
 **6. Archive.** Rescue branches and ARCHIVE verdicts become annotated `archive/*` tags; the branch refs are removed. Nothing is deleted from history. The flow ends here; pushing and deploying stay separate decisions.
 
@@ -119,10 +125,10 @@ The base ref then moves with an old-value check, and the worktree's index follow
 | `plan` | `--run <run dir>`, `--json` |
 | `integrate` | `--run <run dir>`, `--repo <name>` to limit to some repositories |
 | `rescue` | `--worktree <dir>`, `--name <branch>`, `--onto <ref>` (default: the worktree's HEAD), `--max-mb 1`, `--json` |
-| `land` | `--repo <dir>`, `--base <branch>`, `--old <sha>`, `--new <ref>`, `--dry-run`, `--no-merge-collisions`, `--json` |
+| `land` | `--repo <dir>`, `--base <branch>`, `--old <sha>`, `--new <ref>`, `--dry-run`, `--allow-collisions`, `--no-merge-collisions` (with `--allow-collisions`), `--json` |
 | `archive` | `--repo <dir>`, `--branch <b>[,<b>...]`, `--prefix archive/`, `--keep-branch` |
 
-Exit codes: `0` ok, `1` stopped by a guard, `2` usage error, `6` integrate stopped on a conflict, `7` land left collisions unresolved.
+Exit codes: `0` ok, `1` stopped by a guard, `2` usage error, `6` integrate stopped on a conflict, `7` land refused because paths collide (nothing written, base not moved), `8` land with `--allow-collisions` moved the base but left collisions unresolved.
 
 ## Configuration
 
@@ -159,7 +165,7 @@ No. It works on local refs and worktrees only.
 - `land` merges collisions for modified text files in ASCII-compatible encodings only; UTF-16, binary files, symlinks, submodules and files added or deleted on one side are left as they are and listed.
 - `land` classifies each path twice and then writes; an editor saving the same file in the milliseconds between the second check and the write can still be overwritten. Land while sessions on the base worktree are idle.
 - Rescue's secret and private-file checks are pattern-based and best effort. Keep a dedicated scanner such as gitleaks in CI.
-- Unresolved collisions leave the base worktree with a staged difference (index at the old base for those paths); the owner brings the landed change in by hand before committing them.
+- `land` refuses on any collision by default, so a busy base worktree blocks landing until its owner commits or stashes. `--allow-collisions` trades that for unresolved paths whose index entries stay at the old base: a plain `git commit` (or `git commit -a`) there records a revert of the landed change on those paths until the owner resolves them.
 - Partial takes (some commits of a branch) are done by hand: cherry-pick them onto a new branch and take that branch.
 - One base branch per repository per run.
 

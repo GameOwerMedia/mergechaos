@@ -59,11 +59,15 @@ mc('integrate', '--run', runDir);
 
 note('5. Rescue the stale session of agent-c (its worktree stays exactly as it is)');
 const rescued = { branch: mc('rescue', '--worktree', wtC).stdout.match(/ to (\S+) at /)[1] };
-note('6. Land: main moves to the tested merge commit; the live edit in src/cart.js is kept');
+note('6. Land: main moves to the tested merge commit; a live session is editing src/cart.js in the main worktree');
 const tip = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: wt, encoding: 'utf8' }).trim();
-mc('land', '--repo', dir, '--base', 'main', '--old', plan.repos[0].baseTip, '--new', plan.repos[0].integration, '--dry-run');
-mc('land', '--repo', dir, '--base', 'main', '--old', plan.repos[0].baseTip, '--new', plan.repos[0].integration);
-note('7. Archive the rescue branch and the ARCHIVE verdicts (tags, nothing is lost)');
+const landArgs = ['land', '--repo', dir, '--base', 'main', '--old', plan.repos[0].baseTip, '--new', plan.repos[0].integration];
+mc(...landArgs, '--dry-run');
+note('   By default a collision refuses the whole landing: nothing is written, main does not move');
+mc(...landArgs);
+note('   The owner agrees to land now: --allow-collisions writes the SAFE paths and merges the base change into the edit');
+mc(...landArgs, '--allow-collisions');
+note('7. Archive the rescue branch and the ARCHIVE verdicts (annotated tags keep their commits reachable)');
 mc('archive', '--repo', dir, '--branch', `${rescued.branch},agent-d/typo`);
 console.log(`\nmain is now ${tip.slice(0, 10)}; uncommitted in the main worktree:\n${execFileSync('git', ['status', '--short'], { cwd: dir, encoding: 'utf8' })}`);
 
