@@ -13,7 +13,8 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync,
+  chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, statSync,
+  unlinkSync, writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -97,6 +98,57 @@ export function worktrees(repo) {
     else if (cur && l === 'bare') cur.bare = true;
     else if (cur && l.startsWith('prunable')) cur.prunable = true;
     else if (!l && cur) { out.push(cur); cur = null; }
+  }
+  return out;
+}
+
+const branchOfRef = s => (s && s.startsWith('refs/heads/') ? s.slice(11) : null);
+/**
+ * Every worktree's git dir, read directly (also for worktrees whose folder is gone): the branch its HEAD names, the
+ * branch a rebase in progress will write back (`rebase-merge/head-name`, `rebase-apply/head-name`), the branch a bisect
+ * returns to (`BISECT_START`), and the operations in progress (rebase, bisect, merge, cherry-pick, revert).
+ * During a rebase or bisect HEAD is detached, so `git worktree list` alone does not show which branch is in use.
+ */
+export function worktreeOps(repo) {
+  const common = commonDir(repo), dirs = [{ gitDir: common, path: mainRoot(repo) }];
+  let names = []; try { names = readdirSync(path.join(common, 'worktrees')); } catch { /* no linked worktrees */ }
+  for (const n of names) {
+    const gitDir = path.join(common, 'worktrees', n);
+    // `gitdir` holds the path of the worktree's .git file, absolute or (worktree.useRelativePaths) relative to gitDir
+    let p = null; try { p = path.dirname(path.resolve(gitDir, readFileSync(path.join(gitDir, 'gitdir'), 'utf8').trim())); } catch { /* broken entry */ }
+    dirs.push({ gitDir, path: p });
+  }
+  return dirs.map(({ gitDir, path: p }) => {
+    const rd = f => { try { return readFileSync(path.join(gitDir, f), 'utf8').trim(); } catch { return null; } };
+    const has = f => existsSync(path.join(gitDir, f));
+    const head = rd('HEAD');
+    const ops = [
+      (has('rebase-merge') || has('rebase-apply')) && 'rebase', has('BISECT_START') && 'bisect', has('MERGE_HEAD') && 'merge',
+      has('CHERRY_PICK_HEAD') && 'cherry-pick', has('REVERT_HEAD') && 'revert', has('sequencer') && !has('CHERRY_PICK_HEAD') && !has('REVERT_HEAD') && 'cherry-pick or revert sequence',
+    ].filter(Boolean);
+    return {
+      gitDir, path: p, ops,
+      checkedOut: head?.startsWith('ref: ') ? branchOfRef(head.slice(5).trim()) : null,
+      rebasing: branchOfRef(rd('rebase-merge/head-name')) || branchOfRef(rd('rebase-apply/head-name')),
+      bisectFrom: rd('BISECT_START') || null,
+    };
+  });
+}
+
+/**
+ * Where `branch` is in use: { kind, text } with kind `rebase` (being rebased), `bisect` (a bisect returns to it),
+ * `operation` (checked out with a merge, cherry-pick, revert, rebase or bisect in progress) or `checkout` (checked out).
+ */
+export function branchUse(repo, branch, ops = worktreeOps(repo)) {
+  const out = [];
+  for (const w of ops) {
+    const where = (w.path || w.gitDir).replace(/\\/g, '/');
+    if (w.rebasing === branch) out.push({ kind: 'rebase', where, text: `a rebase of ${branch} is in progress in ${where}` });
+    if (w.bisectFrom === branch) out.push({ kind: 'bisect', where, text: `a bisect started from ${branch} is in progress in ${where}` });
+    if (w.checkedOut === branch) {
+      out.push(w.ops.length ? { kind: 'operation', where, text: `${branch} is checked out in ${where} with a ${w.ops.join(' and ')} in progress` }
+        : { kind: 'checkout', where, text: `checked out in ${where}` });
+    }
   }
   return out;
 }
@@ -427,7 +479,21 @@ export function integrate(plan, { runDir, only = null, log = () => {} } = {}) {
 
 // ---------- rescue ----------
 
-const sha256 = buf => createHash('sha256').update(buf).digest('hex');
+const HASH_MAX = 2 ** 30;
+/** SHA-256 of a file read in 1 MiB chunks; null above HASH_MAX bytes. */
+function hashFile(file, size) {
+  if (size > HASH_MAX) return null;
+  const h = createHash('sha256'), chunk = Buffer.alloc(1 << 20), fd = openSync(file, 'r');
+  try { let n; while ((n = readSync(fd, chunk, 0, chunk.length, null)) > 0) h.update(chunk.subarray(0, n)); } finally { closeSync(fd); }
+  return h.digest('hex');
+}
+const caseFolding = process.platform === 'win32' || process.platform === 'darwin';
+/** `child` is `parent` or inside it (both already resolved). */
+const isInside = (child, parent) => {
+  const f = p => { const s = p.replace(/\\/g, '/').replace(/\/+$/, ''); return caseFolding ? s.toLowerCase() : s; };
+  const c = f(child), q = f(parent);
+  return c === q || c.startsWith(`${q}/`);
+};
 
 /**
  * Commits every uncommitted change of a worktree (tracked edits, deletions, untracked files) onto a new branch,
@@ -442,17 +508,23 @@ export function rescue({ worktree, name, onto = 'HEAD', maxMb = 1, now = new Dat
   const parent = git(wt, ['rev-parse', `${onto}^{commit}`]);
   const branch = name || uniqueBranch(wt, `rescue/${slug(path.basename(wt))}/${now.toISOString().slice(0, 10)}`);
   if (refExists(wt, `refs/heads/${branch}`)) throw new Error(`branch ${branch} already exists; pass --name`);
-  const take = new Set(), left = [];
+  const take = new Set(), left = [], wtReal = real(wt);
   for (const e of entries) {
     for (const p of [e.path, e.from].filter(Boolean)) {
       const abs = path.join(wt, p);
       if (isPrivateFile(p)) { left.push({ path: p, why: 'private file' }); continue; }
-      if (!existsSync(abs)) { take.add(p); continue; }                 // a deletion
+      // a folder link or junction on the way to the file may lead out of the worktree: never read or commit what is outside
+      let dir = path.dirname(abs);
+      while (!existsSync(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+      if (!isInside(real(dir), wtReal)) { left.push({ path: p, why: 'outside the worktree (reached through a link or junction)' }); continue; }
+      if (!lstatOrNull(abs)) { take.add(p); continue; }                 // a deletion
       const st = lstatSync(abs);
       if (st.isDirectory()) { left.push({ path: p, why: 'nested repository or submodule' }); continue; }
       if (st.isSymbolicLink()) { take.add(p); continue; }                // the link itself, not its target
+      if (!st.isFile()) { left.push({ path: p, why: 'not a regular file' }); continue; }
+      // size first: a file above the limit is never read whole (hashed in chunks, up to HASH_MAX)
+      if (st.size > maxMb * 1e6) { const h = hashFile(abs, st.size); left.push({ path: p, why: `larger than ${maxMb} MB${h ? '' : ' (not hashed: over 1 GiB)'}`, size: st.size, sha256: h }); continue; }
       const buf = readFileSync(abs);
-      if (st.size > maxMb * 1e6) { left.push({ path: p, why: `larger than ${maxMb} MB`, size: st.size, sha256: sha256(buf) }); continue; }
       const kinds = scanBuffer(buf);
       if (kinds.length) { left.push({ path: p, why: `possible secret (${kinds.join(', ')})` }); continue; }
       take.add(p);
@@ -527,6 +599,21 @@ function blockedParent(W, rel) {
   return null;
 }
 const isRegular = mode => mode === '100644' || mode === '100755';
+const GITLINK = '160000';
+
+/**
+ * On a case-insensitive filesystem: changed paths whose name, or one of whose folders, is spelled differently only in
+ * letter case by another changed path or by a path of the new tree (a case-only rename, Readme.md -> README.md). Writing
+ * one and deleting the other would delete the same file on disk, so these paths are classified COLLIDE.
+ */
+function caseClashes(root, NEW, changes) {
+  const prefixes = p => { const parts = p.split('/'); return parts.map((_, i) => parts.slice(0, i + 1).join('/')); };
+  const spell = new Map();
+  const note = s => { const k = s.toLowerCase(); if (spell.has(k)) spell.get(k).add(s); };
+  for (const c of changes) for (const s of prefixes(c.p)) { const k = s.toLowerCase(); if (!spell.has(k)) spell.set(k, new Set()); spell.get(k).add(s); }
+  for (const p of git(root, ['ls-tree', '-r', '-z', '--name-only', NEW]).split('\0').filter(Boolean)) for (const s of prefixes(p)) note(s);
+  return new Set(changes.filter(c => prefixes(c.p).some(s => spell.get(s.toLowerCase()).size > 1)).map(c => c.p));
+}
 
 /** Classifies one changed path against the disk of the worktree `W`. */
 function classify(root, W, { st, p, oldMode, newMode }, { OLD, NEW, fileMode }) {
@@ -535,8 +622,15 @@ function classify(root, W, { st, p, oldMode, newMode }, { OLD, NEW, fileMode }) 
   const abs = path.join(W, p), row = { status: st, path: p };
   const blocked = blockedParent(W, p);
   if (blocked) return { ...row, kind: 'COLLIDE', reason: `a file or link is in the way: ${blocked}` };
-  if ([oldMode, newMode].some(m => m !== '000000' && !isRegular(m))) return { ...row, kind: 'COLLIDE', reason: 'symlink or submodule' };
   const ls = lstatOrNull(abs);
+  if (oldMode === GITLINK || newMode === GITLINK) {
+    // a submodule pointer: only the index entry changes; the nested repository's working tree is never touched
+    const other = oldMode === GITLINK ? newMode : oldMode;
+    if (other !== '000000' && other !== GITLINK) return { ...row, kind: 'COLLIDE', reason: 'a submodule turns into a file or link (or back)' };
+    if (oldMode !== GITLINK && ls && !(ls.isDirectory() && !readdirSync(abs).length)) return { ...row, kind: 'COLLIDE', reason: 'something is on disk where the new submodule goes' };
+    return { ...row, kind: 'SAFE', gitlink: true, reason: newMode === GITLINK ? 'submodule pointer only; the nested checkout is not touched (git submodule update moves it)' : 'submodule removed from the tree; its folder is left on disk' };
+  }
+  if ([oldMode, newMode].some(m => m !== '000000' && !isRegular(m))) return { ...row, kind: 'COLLIDE', reason: 'symlink' };
   if (ls && ls.isSymbolicLink()) return { ...row, kind: 'COLLIDE', reason: 'a symlink is on disk' };
   if (ls && ls.isDirectory()) return { ...row, kind: 'COLLIDE', reason: 'a folder is on disk' };
   const d = ls ? git(W, ['hash-object', '--', p], { allowFail: true }) : null;
@@ -567,7 +661,9 @@ function restoreIndexEntries(W, root, OLD, paths) {
   const removals = [], adds = [];
   for (const p of paths) {
     const ls = git(root, ['ls-tree', '-z', OLD, '--', p]).replace(/\0$/, '');
-    if (ls) { const [meta] = ls.split('\t'); const [mode, , sha] = meta.split(' '); adds.push(`${mode},${sha},${p}`); } else removals.push(p);
+    const [mode, type, sha] = ls ? ls.split('\t')[0].split(' ') : [];
+    // only blobs and gitlinks are index entries; a folder in the old base (a folder that became a file) means: no entry
+    if (ls && type !== 'tree') adds.push(`${mode},${sha},${p}`); else removals.push(p);
   }
   for (const p of removals) gitRaw(W, ['update-index', '--force-remove', '--', p]);
   for (const a of adds) {
@@ -582,8 +678,12 @@ function restoreIndexEntries(W, root, OLD, paths) {
  * Moves `base` from `old` to `new` (a fast-forward to the tested integration commit) and brings the working tree that
  * has `base` checked out in line, path by path:
  *   EQUAL    the disk already holds the new content: nothing to write
- *   SAFE     the disk still holds the old base content (and no file blocks its folder): written from the new commit
- *   COLLIDE  anything else (someone's uncommitted edit, a file in the way, a symlink, a submodule)
+ *   SAFE     the disk still holds the old base content (and no file blocks its folder): written from the new commit;
+ *            or a submodule pointer change: only the index entry moves, the nested repository is never touched
+ *   COLLIDE  anything else (someone's uncommitted edit, a file in the way, a symlink, a submodule changing type or
+ *            landing on existing files, a case-only rename where core.ignorecase is set)
+ * Guards first: the base is not being rebased or bisected in any worktree, is checked out in at most one worktree, and
+ * that worktree has nothing staged and no merge, cherry-pick, revert, rebase or bisect in progress.
  * By default any COLLIDE path refuses the landing: nothing is written and the ref does not move (`refused`).
  * With allowCollisions the SAFE paths land anyway; the base change is merged three-way into an edited text file when
  * that merges cleanly, otherwise the path is left exactly as it is on disk, its index entry goes back to the old base,
@@ -596,17 +696,27 @@ export function land({ repo, base, oldRef, newRef, dryRun = false, allowCollisio
   const tip = git(root, ['rev-parse', `refs/heads/${base}`]);
   if (tip !== OLD) return { stopped: `${base} moved since the plan (${tip.slice(0, 10)} is not ${OLD.slice(0, 10)}): merge it into the integration branch again and retest` };
   if (!isAncestor(root, OLD, NEW)) return { stopped: `${newRef} does not contain ${base}: not a fast-forward` };
-  const wt = worktrees(root).find(w => w.branch === base && existsSync(w.path));
-  if (!wt) {
+  // the base must not be in use by an operation in progress in any worktree: a rebase or bisect writes it back when it ends
+  const ops = worktreeOps(root);
+  const busy = branchUse(root, base, ops).filter(u => u.kind !== 'checkout');
+  if (busy.length) return { stopped: `${busy.map(u => u.text).join('; ')}: finish or abort it, then run land again` };
+  const wts = ops.filter(w => w.checkedOut === base && w.path && existsSync(w.path));
+  if (wts.length > 1) {
+    return { stopped: `${base} is checked out in ${wts.length} worktrees (${wts.map(w => w.path.replace(/\\/g, '/')).join(', ')}); land updates exactly one working tree. Switch all but one of them to another branch, then run land again` };
+  }
+  if (!wts.length) {
     if (!dryRun) git(root, ['update-ref', '-m', `mergechaos land: ${base} -> ${newRef}`, `refs/heads/${base}`, NEW, OLD]);
     return { base, old: OLD, new: NEW, worktree: null, table: [], moved: !dryRun, collisions: [], unresolved: [] };
   }
-  const W = wt.path;
+  const W = wts[0].path.replace(/\\/g, '/');
   if (gitRaw(W, ['diff', '--cached', '--quiet']).status !== 0) return { stopped: `something is staged in ${W}: the owner commits or unstages it first` };
-  if (refExists(W, 'MERGE_HEAD') || refExists(W, 'REBASE_HEAD') || refExists(W, 'CHERRY_PICK_HEAD')) return { stopped: `a merge, rebase or cherry-pick is in progress in ${W}` };
   const ctx = { OLD, NEW, fileMode: git(W, ['config', '--bool', 'core.filemode'], { allowFail: true }) !== 'false' && process.platform !== 'win32' };
   const changes = rawChanges(root, OLD, NEW);
-  const table = changes.map(c => classify(root, W, c, ctx));
+  const clash = git(W, ['config', '--bool', 'core.ignorecase'], { allowFail: true }) === 'true' ? caseClashes(root, NEW, changes) : new Set();
+  const classifyOne = c => (clash.has(c.p)
+    ? { status: c.st, path: c.p, kind: 'COLLIDE', reason: 'differs only in letter case from another path, and this filesystem ignores case (core.ignorecase): rename it by hand with git mv' }
+    : classify(root, W, c, ctx));
+  const table = changes.map(classifyOne);
   const refuse = () => ({ refused: true, base, old: OLD, new: NEW, worktree: W, table, collisions: table.filter(t => t.kind === 'COLLIDE') });
   const colliding = table.some(t => t.kind === 'COLLIDE');
   if (dryRun) return { base, old: OLD, new: NEW, worktree: W, table, dryRun: true, wouldRefuse: colliding && !allowCollisions };
@@ -614,12 +724,13 @@ export function land({ repo, base, oldRef, newRef, dryRun = false, allowCollisio
   // second look right before writing: anything that changed since the first pass becomes COLLIDE
   changes.forEach((c, i) => {
     if (table[i].kind !== 'SAFE') return;
-    const again = classify(root, W, c, ctx);
+    const again = classifyOne(c);
     if (again.kind !== 'SAFE') table[i] = { ...again, kind: 'COLLIDE', reason: again.reason || 'changed on disk during landing' };
   });
   if (!allowCollisions && table.some(t => t.kind === 'COLLIDE')) return refuse();
   const safe = table.filter(t => t.kind === 'SAFE');
-  const write = safe.filter(t => t.status !== 'D' && !t.mode).map(t => t.path);
+  // submodule pointers (gitlinks) change only in the index: the nested repository's files are never written or deleted
+  const write = safe.filter(t => t.status !== 'D' && !t.mode && !t.gitlink).map(t => t.path);
   if (write.length) {
     const idx = path.join(path.resolve(W, git(W, ['rev-parse', '--git-dir'])), `mergechaos-land-${process.pid}.idx`);
     const env = { ...process.env, GIT_INDEX_FILE: idx };
@@ -630,7 +741,7 @@ export function land({ repo, base, oldRef, newRef, dryRun = false, allowCollisio
     } finally { rmSync(idx, { force: true }); }
   }
   for (const t of safe.filter(x => x.mode)) chmodSync(path.join(W, t.path), t.mode === '100755' ? 0o755 : 0o644);
-  for (const t of safe.filter(x => x.status === 'D')) { try { unlinkSync(path.join(W, t.path)); } catch { /* already gone */ } }
+  for (const t of safe.filter(x => x.status === 'D' && !x.gitlink)) { try { unlinkSync(path.join(W, t.path)); } catch { /* already gone */ } }
   git(root, ['update-ref', '-m', `mergechaos land: ${base} -> ${newRef}`, `refs/heads/${base}`, NEW, OLD]);
   // the shared index follows the ref (two-tree read-tree: no -u, the working tree stays as it is)
   if (gitRaw(W, ['read-tree', '-m', '-i', OLD, NEW]).status !== 0) git(W, ['read-tree', NEW]);
@@ -648,22 +759,28 @@ export function land({ repo, base, oldRef, newRef, dryRun = false, allowCollisio
   if (unresolved.length) restoreIndexEntries(W, root, OLD, unresolved);
   gitRaw(W, ['update-index', '-q', '--refresh']);
   return {
-    base, old: OLD, new: NEW, worktree: W, table, wrote: write.length, deleted: safe.filter(t => t.status === 'D').length, collisions, moved: true,
+    base, old: OLD, new: NEW, worktree: W, table, wrote: write.length, deleted: safe.filter(t => t.status === 'D' && !t.gitlink).length, collisions, moved: true,
     unresolved, statusAfter: (statusEntries(W) || []).length,
   };
 }
 
 // ---------- archive ----------
 
-/** Tags each branch as archive/<branch> and removes the branch ref. Commits stay reachable; nothing is deleted from history. */
+/**
+ * Tags each branch as archive/<branch> and removes the branch ref. Commits stay reachable; nothing is deleted from history.
+ * A branch in use by an operation in progress in any worktree (rebase, bisect, or a merge, cherry-pick or revert where it is
+ * checked out) is skipped entirely, also with keepBranch: git writes that ref back when the operation finishes. A branch
+ * that is only checked out is skipped unless keepBranch (then it is tagged and kept).
+ */
 export function archive(repo, branches, { prefix = 'archive/', keepBranch = false } = {}) {
   const root = mainRoot(repo), out = [];
   for (const b of branches) {
     try {
       const sha = git(root, ['rev-parse', '--verify', '-q', `refs/heads/${b}`], { allowFail: true });
       if (!sha) { out.push({ branch: b, skipped: 'no such branch' }); continue; }
-      const wt = worktrees(root).find(w => w.branch === b);
-      if (wt && !keepBranch) { out.push({ branch: b, skipped: `checked out in ${wt.path}` }); continue; }
+      const use = branchUse(root, b), busy = use.filter(u => u.kind !== 'checkout');
+      if (busy.length) { out.push({ branch: b, skipped: `in use: ${busy.map(u => u.text).join('; ')}; finish or abort it first` }); continue; }
+      if (use.length && !keepBranch) { out.push({ branch: b, skipped: use.map(u => u.text).join('; ') }); continue; }
       let tag = `${prefix}${b}`, i = 2;
       while (refExists(root, `refs/tags/${tag}`) && git(root, ['rev-parse', `refs/tags/${tag}^{commit}`]) !== sha) tag = `${prefix}${b}-${i++}`;
       if (!refExists(root, `refs/tags/${tag}`)) git(root, ['tag', '-a', '-m', `Archived by mergechaos: ${b}`, tag, sha]);

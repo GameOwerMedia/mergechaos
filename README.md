@@ -99,15 +99,15 @@ The script drafts the plan mechanically and never upgrades ASK to TAKE. The skil
 
 **3. Integrate.** `merge/<stamp>` is created from the base tip recorded in the plan, in its own worktree under the run folder. TAKE branches are merged in order with real merge commits. A conflict stops the run (exit 6) with the file list; resolve it in that worktree, commit, and run `integrate` again: finished merges are skipped, moved branches are refused. Run the tests the reports list right there.
 
-**4. Rescue.** A stale worktree's uncommitted changes (edits, deletions, untracked files) become a commit on `rescue/<worktree>/<date>`, built through a temporary index on top of that worktree's HEAD. Nothing in the worktree changes. Paths are passed to git as literal names (no glob expansion). Well-known private file names (`.env` and `*.env`, `*.local.*`, key stores, SSH keys, credential files), contents that look like credentials (UTF-16 files are decoded, binary files scanned as bytes; best effort, not a guarantee) and files above `--max-mb` are left out and listed in `.mergechaos/RESCUE.md` inside the commit by path, size and SHA-256. Live worktrees are never rescued: their owner commits.
+**4. Rescue.** A stale worktree's uncommitted changes (edits, deletions, untracked files) become a commit on `rescue/<worktree>/<date>`, built through a temporary index on top of that worktree's HEAD. Nothing in the worktree changes. Paths are passed to git as literal names (no glob expansion). Well-known private file names (`.env` and `*.env`, `*.local.*`, key stores, SSH keys, credential files), contents that look like credentials (UTF-16 files are decoded, binary files scanned as bytes; best effort, not a guarantee) and files above `--max-mb` are left out and listed in `.mergechaos/RESCUE.md` inside the commit by path, size and SHA-256 (size is checked before a file is read; files above 1 GiB are listed without a hash). Paths reached through a folder link or junction that resolves outside the worktree are left out and listed; a symlink inside the worktree is committed as a link, never as its target. In the skill flow only stale worktrees are rescued and live ones are left to their owner; the `rescue` command itself does not judge liveness and rescues whichever worktree you point it at, without changing it.
 
-**5. Land.** Guards first: the base still points at the recorded tip, the integration commit contains it, nothing is staged and no merge is in progress where the base is checked out. Then each changed path is compared with what is on disk:
+**5. Land.** Guards first (each stops with exit 1 and changes nothing): the base still points at the recorded tip; the integration commit contains it; no worktree is rebasing the base or running a bisect that started from it (read from every worktree's git dir: `rebase-merge/head-name`, `rebase-apply/head-name`, `BISECT_START`, because during those operations HEAD is detached and `git worktree list` does not show the branch); the base is checked out in at most one worktree; and in that worktree nothing is staged and no merge, cherry-pick, revert, rebase or bisect is in progress. Then each changed path is compared with what is on disk:
 
 | Class | Disk holds | Action |
 |---|---|---|
 | **EQUAL** | the new content already | nothing (a pure exec-bit change is applied where the filesystem has one, reported otherwise) |
-| **SAFE** | the old base content, and no file or link sits where one of its folders should be | written from the new commit (temporary index + `checkout-index`), or deleted |
-| **COLLIDE** | anything else: someone's uncommitted edit, a file in the way of a new folder, a symlink, a submodule | by default: the whole landing is refused (see below) |
+| **SAFE** | the old base content, and no file or link sits where one of its folders should be; or the path is a submodule pointer (gitlink) | written from the new commit (temporary index + `checkout-index`), or deleted; for a submodule only the index entry changes, the nested repository's files and HEAD are never touched (`git submodule update` moves them) |
+| **COLLIDE** | anything else: someone's uncommitted edit, a file in the way of a new folder, a symlink, a submodule that turns into a file or appears where something is on disk, and, on a case-insensitive filesystem (`core.ignorecase`), a path that differs only in letter case from another changed path | by default: the whole landing is refused (see below) |
 
 **By default, one COLLIDE path refuses the landing** (exit 7): nothing is written, the index is untouched and the base does not move. The output lists the paths and what to do: the owner of that worktree commits or stashes the edits (or moves away what is in the way), then you run the same `land` command again. `--dry-run` shows the same table and says whether a real run would refuse.
 
@@ -115,7 +115,7 @@ The script drafts the plan mechanically and never upgrades ASK to TAKE. The skil
 
 The base ref moves with an old-value check, and the worktree's index follows with a two-tree `read-tree` that does not touch files. If the base is not checked out anywhere, only the ref moves. Every SAFE path is classified a second time right before the write; a path that changed in between becomes COLLIDE, which refuses the landing without `--allow-collisions`.
 
-**6. Archive.** Rescue branches and ARCHIVE verdicts become annotated `archive/*` tags; the branch refs are removed. Nothing is deleted from history. The flow ends here; pushing and deploying stay separate decisions.
+**6. Archive.** Rescue branches and ARCHIVE verdicts become annotated `archive/*` tags; the branch refs are removed only after their tag exists on the same commit, so nothing is deleted from history. A branch in use is refused and keeps its ref (exit 1, with the reason per branch): a rebase or bisect of it in any worktree, or a merge, cherry-pick or revert where it is checked out, always; a branch that is only checked out, unless `--keep-branch` (then it is tagged and kept). The flow ends here; pushing and deploying stay separate decisions.
 
 ## Commands
 
@@ -128,7 +128,7 @@ The base ref moves with an old-value check, and the worktree's index follows wit
 | `land` | `--repo <dir>`, `--base <branch>`, `--old <sha>`, `--new <ref>`, `--dry-run`, `--allow-collisions`, `--no-merge-collisions` (with `--allow-collisions`), `--json` |
 | `archive` | `--repo <dir>`, `--branch <b>[,<b>...]`, `--prefix archive/`, `--keep-branch` |
 
-Exit codes: `0` ok, `1` stopped by a guard, `2` usage error, `6` integrate stopped on a conflict, `7` land refused because paths collide (nothing written, base not moved), `8` land with `--allow-collisions` moved the base but left collisions unresolved.
+Exit codes: `0` ok, `1` stopped by a guard (or `archive` skipped at least one branch), `2` usage error, `6` integrate stopped on a conflict, `7` land refused because paths collide (nothing written, base not moved), `8` land with `--allow-collisions` moved the base but left collisions unresolved.
 
 ## Configuration
 
@@ -162,8 +162,13 @@ No. It works on local refs and worktrees only.
 
 - Conflict prediction needs git 2.38+ (`merge-tree --write-tree`); with older git the map shows `?` and everything else still works.
 - Session liveness is a heuristic based on file times.
-- `land` merges collisions for modified text files in ASCII-compatible encodings only; UTF-16, binary files, symlinks, submodules and files added or deleted on one side are left as they are and listed.
-- `land` classifies each path twice and then writes; an editor saving the same file in the milliseconds between the second check and the write can still be overwritten. Land while sessions on the base worktree are idle.
+- `land` merges collisions for modified text files in ASCII-compatible encodings only; UTF-16, binary files, symlinks, submodules that change type and files added or deleted on one side are left as they are and listed.
+- `land` classifies each path twice and then writes; an editor saving the same file in the milliseconds between the second check and the write can still be overwritten. This window cannot be closed from outside the editor and is not covered by the tests. Land while sessions on the base worktree are idle. The same applies to the guards: an operation (rebase, bisect, merge) started in another worktree after they ran is not seen.
+- Case-insensitive filesystems (Windows, macOS by default): a case-only rename (`Readme.md` to `README.md`) is not applied by `land`; both paths are COLLIDE, so the landing is refused, because writing one name and deleting the other would remove the same file on disk. Keep case-only renames out of the integration branch and commit them separately with `git mv` in the base worktree, or land with `--allow-collisions` and leave the two paths unresolved for the owner.
+- A base checked out in two worktrees (possible with `git worktree add --force`) is refused: `land` updates exactly one working tree. Switch all but one of them to another branch first.
+- Submodules: `land` moves the pointer in the index only. The nested checkout stays where it was until someone runs `git submodule update`; until then `git status` shows the submodule as modified.
+- Rescue leaves out files above `--max-mb` (default 1 MB) by their size, without reading them; their SHA-256 is computed in chunks up to 1 GiB, above that only the size is listed.
+- Rescue does not follow folder links or junctions that resolve outside the worktree; those paths are listed as left out. On Windows git lists the files behind a junction one by one, so each appears in the manifest.
 - Rescue's secret and private-file checks are pattern-based and best effort. Keep a dedicated scanner such as gitleaks in CI.
 - `land` refuses on any collision by default, so a busy base worktree blocks landing until its owner commits or stashes. `--allow-collisions` trades that for unresolved paths whose index entries stay at the old base: a plain `git commit` (or `git commit -a`) there records a revert of the landed change on those paths until the owner resolves them.
 - Partial takes (some commits of a branch) are done by hand: cherry-pick them onto a new branch and take that branch.

@@ -24,7 +24,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test tests/mergechaos.test.mjs tests/secrets.test.mjs",
+    "test": "node --test tests/mergechaos.test.mjs tests/guards.test.mjs tests/secrets.test.mjs",
     "demo": "node examples/demo.mjs"
   }
 }
