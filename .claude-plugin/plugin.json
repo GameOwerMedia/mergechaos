@@ -1,0 +1,22 @@
+{
+  "name": "mergechaos",
+  "version": "0.1.0",
+  "description": "Untangle many branches, worktrees and half-finished agent sessions: an inventory from git, a merge plan with TAKE / ASK / ARCHIVE verdicts, integration in dependency order, rescue branches for dead sessions, and a landing that never overwrites uncommitted work.",
+  "author": {
+    "name": "OverJK",
+    "url": "https://github.com/GameOwerMedia"
+  },
+  "homepage": "https://github.com/GameOwerMedia/mergechaos",
+  "repository": "https://github.com/GameOwerMedia/mergechaos",
+  "license": "MIT",
+  "keywords": [
+    "git",
+    "merge",
+    "worktree",
+    "multi-agent",
+    "branch-management",
+    "integration",
+    "claude-code",
+    "skill"
+  ]
+}

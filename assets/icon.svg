@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="t"><title id="t">mergechaos</title>
+<style>
+  :root { --bg:#f6f8fa; --card:#ffffff; --line:#d0d7de; --fg:#1f2328; --muted:#59636e; --blue:#0969da; --green:#1a7f37; --amber:#9a6700; --red:#cf222e; --purple:#8250df;
+          --blue-bg:#ddf4ff; --green-bg:#dafbe1; --amber-bg:#fff8c5; --red-bg:#ffebe9; --purple-bg:#fbefff; --term:#0d1117; --term-fg:#e6edf3; --term-muted:#9198a1; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1117; --card:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#9198a1; --blue:#4493f8; --green:#3fb950; --amber:#d29922; --red:#f85149; --purple:#ab7df8;
+            --blue-bg:#0c2d6b; --green-bg:#0f3a1d; --amber-bg:#3b2e00; --red-bg:#4c1214; --purple-bg:#2e1a52; --term:#010409; }
+  }
+  text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--fg); }
+  .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+  .muted { fill: var(--muted); }
+  .h { font-weight: 600; }
+  .card { fill: var(--card); stroke: var(--line); stroke-width: 1; }
+  .wire { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+</style>
+<rect width="512" height="512" rx="96" stroke-width="8" style="fill:var(--card);stroke:var(--line)"/>
+<line x1="120" y1="300" x2="400" y2="300" stroke-width="22" stroke-linecap="round" style="stroke:var(--fg)"/>
+<path d="M150,300 C200,300 190,170 250,170 L300,170 C350,170 340,300 380,300" fill="none" stroke-width="22" stroke-linecap="round" style="stroke:var(--amber)"/>
+<path d="M190,300 C220,300 220,390 260,390 L300,390 C330,390 330,300 360,300" fill="none" stroke-width="22" stroke-linecap="round" style="stroke:var(--purple)"/>
+<circle cx="120" cy="300" r="30" stroke-width="20" style="fill:var(--card);stroke:var(--fg)"/>
+<circle cx="400" cy="300" r="30" stroke-width="20" style="fill:var(--card);stroke:var(--fg)"/>
+<circle cx="275" cy="170" r="22" stroke-width="18" style="fill:var(--card);stroke:var(--amber)"/>
+<circle cx="280" cy="390" r="22" stroke-width="18" style="fill:var(--card);stroke:var(--purple)"/>
+</svg>

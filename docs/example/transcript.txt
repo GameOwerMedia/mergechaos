@@ -1,0 +1,62 @@
+# 1. Inventory: facts from git, no model
+$ mergechaos inventory --repo ~/work/acme-shop --out ~/work/runs/demo
+Map: ~/work/runs/demo/MAP.md
+Repositories: 1, unmerged branches: 4, without a current report: 2, stale worktrees: 1
+Next: mergechaos plan --run "~/work/runs/demo"
+(exit 0)
+
+# 2. Draft plan: TAKE only with a current report that says why
+$ mergechaos plan --run ~/work/runs/demo
+Plan: ~/work/runs/demo/PLAN.md
+TAKE 2, ASK 1, ARCHIVE 1. Review plan.json before integrate.
+(exit 0)
+
+# 3. The owner answers the ASK: agent-c/theme is the UK launch theme, take it (plan.json edited)
+# 4. Integrate in dependency order inside a separate worktree
+$ mergechaos integrate --run ~/work/runs/demo
+acme-shop: merging agent-a/cart
+acme-shop: merging agent-b/checkout
+acme-shop: merging agent-c/theme
+acme-shop: 2 merged on merge/2026-10-25-11-08 at 551cd56663 (~/work/runs/demo/wt/acme-shop)
+  STOPPED: conflict merging agent-c/theme
+  conflicted: src/shared.js
+  resolve in the worktree keeping both sides, git commit --no-edit, then run integrate again
+(exit 6)
+
+#    Resolve src/shared.js keeping both sides (USD from agent-b, dark theme from agent-c), commit, run again
+$ mergechaos integrate --run ~/work/runs/demo
+acme-shop: 0 merged, 3 already in on merge/2026-10-25-11-08 at f3912c1d02 (~/work/runs/demo/wt/acme-shop)
+(exit 0)
+
+# 5. Rescue the stale session of agent-c (its worktree stays exactly as it is)
+$ mergechaos rescue --worktree ~/work/acme-shop-theme
+Rescued 3 path(s) to rescue/acme-shop-theme/2026-10-25 at 5d0550ea41; 1 left out (listed in .mergechaos/RESCUE.md). The worktree was not changed.
+(exit 0)
+
+# 6. Land: main moves to the tested merge commit; the live edit in src/cart.js is kept
+$ mergechaos land --repo ~/work/acme-shop --base main --old e0646dfe6799407a46c45da64304e6dbdd9bc7e0 --new merge/2026-10-25-11-08 --dry-run
+Dry run: main e0646dfe67 -> f3912c1d02 (working tree ~/work/acme-shop)
+paths: EQUAL 0, SAFE 4, COLLIDE 1
+  SAFE	A	docs/premerge/agent-a_cart.md
+  SAFE	A	docs/premerge/agent-b_checkout.md
+  COLLIDE	M	src/cart.js
+  SAFE	A	src/checkout.js
+  SAFE	M	src/shared.js
+(exit 0)
+
+$ mergechaos land --repo ~/work/acme-shop --base main --old e0646dfe6799407a46c45da64304e6dbdd9bc7e0 --new merge/2026-10-25-11-08
+main e0646dfe67 -> f3912c1d02 (working tree ~/work/acme-shop)
+paths: EQUAL 0, SAFE 4, COLLIDE 1
+  SAFE	A	docs/premerge/agent-a_cart.md
+  SAFE	A	docs/premerge/agent-b_checkout.md
+  COLLIDE	M	src/cart.js
+  SAFE	A	src/checkout.js
+  SAFE	M	src/shared.js
+  src/cart.js: merged into the uncommitted edit (LF)
+(exit 0)
+
+# 7. Archive the rescue branch and the ARCHIVE verdicts (tags, nothing is lost)
+$ mergechaos archive --repo ~/work/acme-shop --branch rescue/acme-shop-theme/2026-10-25,agent-d/typo
+rescue/acme-shop-theme/2026-10-25 -> tag archive/rescue/acme-shop-theme/2026-10-25 (5d0550ea41), branch removed
+agent-d/typo -> tag archive/agent-d/typo (57c4f73d02), branch removed
+(exit 0)

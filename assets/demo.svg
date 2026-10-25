@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="912" viewBox="0 0 1000 912" role="img" aria-labelledby="t"><title id="t">mergechaos demo: acme-shop after four agents</title>
+<style>
+  :root { --bg:#f6f8fa; --card:#ffffff; --line:#d0d7de; --fg:#1f2328; --muted:#59636e; --blue:#0969da; --green:#1a7f37; --amber:#9a6700; --red:#cf222e; --purple:#8250df;
+          --blue-bg:#ddf4ff; --green-bg:#dafbe1; --amber-bg:#fff8c5; --red-bg:#ffebe9; --purple-bg:#fbefff; --term:#0d1117; --term-fg:#e6edf3; --term-muted:#9198a1; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1117; --card:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#9198a1; --blue:#4493f8; --green:#3fb950; --amber:#d29922; --red:#f85149; --purple:#ab7df8;
+            --blue-bg:#0c2d6b; --green-bg:#0f3a1d; --amber-bg:#3b2e00; --red-bg:#4c1214; --purple-bg:#2e1a52; --term:#010409; }
+  }
+  text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--fg); }
+  .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+  .muted { fill: var(--muted); }
+  .h { font-weight: 600; }
+  .card { fill: var(--card); stroke: var(--line); stroke-width: 1; }
+  .wire { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+</style>
+<rect x="0" y="0" width="1000" height="912" rx="12" style="fill:var(--term)"/>
+<circle cx="22" cy="22" r="6" fill="#ff5f57"/>
+<circle cx="42" cy="22" r="6" fill="#febc2e"/>
+<circle cx="62" cy="22" r="6" fill="#28c840"/>
+<text x="500" y="27" font-size="12.5" text-anchor="middle" style="fill:var(--term-muted)">mergechaos demo: acme-shop after four agents</text>
+<text x="20" y="67" font-size="12.5" class="mono" style="fill:#6cb6ff;white-space:pre" xml:space="preserve"># 1. Inventory: facts from git, no model</text>
+<text x="20" y="86" font-size="12.5" class="mono" style="fill:var(--term-fg);white-space:pre" xml:space="preserve">$ mergechaos inventory --repo ~/work/acme-shop --out ~/work/runs/demo</text>
+<text x="20" y="105" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">Map: ~/work/runs/demo/MAP.md</text>
+<text x="20" y="124" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">Repositories: 1, unmerged branches: 4, without a current report: 2, stale worktrees: 1</text>
+<text x="20" y="143" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">Next: mergechaos plan --run "~/work/runs/demo"</text>
+<text x="20" y="162" font-size="12.5" class="mono" style="fill:#6cb6ff;white-space:pre" xml:space="preserve"># 2. Draft plan: TAKE only with a current report that says why</text>
+<text x="20" y="181" font-size="12.5" class="mono" style="fill:var(--term-fg);white-space:pre" xml:space="preserve">$ mergechaos plan --run ~/work/runs/demo</text>
+<text x="20" y="200" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">Plan: ~/work/runs/demo/PLAN.md</text>
+<text x="20" y="219" font-size="12.5" class="mono" style="fill:#7ee787;white-space:pre" xml:space="preserve">TAKE 2, ASK 1, ARCHIVE 1. Review plan.json before integrate.</text>
+<text x="20" y="238" font-size="12.5" class="mono" style="fill:#6cb6ff;white-space:pre" xml:space="preserve"># 3. The owner answers the ASK: agent-c/theme is the UK launch theme, take it (plan.json edited)</text>
+<text x="20" y="257" font-size="12.5" class="mono" style="fill:#6cb6ff;white-space:pre" xml:space="preserve"># 4. Integrate in dependency order inside a separate worktree</text>
+<text x="20" y="276" font-size="12.5" class="mono" style="fill:var(--term-fg);white-space:pre" xml:space="preserve">$ mergechaos integrate --run ~/work/runs/demo</text>
+<text x="20" y="295" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">acme-shop: merging agent-a/cart</text>
+<text x="20" y="314" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">acme-shop: merging agent-b/checkout</text>
+<text x="20" y="333" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">acme-shop: merging agent-c/theme</text>
+<text x="20" y="352" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">acme-shop: 2 merged on merge/2026-10-25-11-08 at 551cd56663 (~/work/runs/demo/wt/acme-shop)</text>
+<text x="20" y="371" font-size="12.5" class="mono" style="fill:#f0883e;white-space:pre" xml:space="preserve">  STOPPED: conflict merging agent-c/theme</text>
+<text x="20" y="390" font-size="12.5" class="mono" style="fill:#f0883e;white-space:pre" xml:space="preserve">  conflicted: src/shared.js</text>
+<text x="20" y="409" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">  resolve in the worktree keeping both sides, git commit --no-edit, then run integrate again</text>
+<text x="20" y="428" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">(exit 6)</text>
+<text x="20" y="447" font-size="12.5" class="mono" style="fill:#6cb6ff;white-space:pre" xml:space="preserve">#    Resolve src/shared.js keeping both sides (USD from agent-b, dark theme from agent-c), commit, run again</text>
+<text x="20" y="466" font-size="12.5" class="mono" style="fill:var(--term-fg);white-space:pre" xml:space="preserve">$ mergechaos integrate --run ~/work/runs/demo</text>
+<text x="20" y="485" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">acme-shop: 0 merged, 3 already in on merge/2026-10-25-11-08 at f3912c1d02 (~/work/runs/demo/wt/acme-shop)</text>
+<text x="20" y="504" font-size="12.5" class="mono" style="fill:#6cb6ff;white-space:pre" xml:space="preserve"># 5. Rescue the stale session of agent-c (its worktree stays exactly as it is)</text>
+<text x="20" y="523" font-size="12.5" class="mono" style="fill:var(--term-fg);white-space:pre" xml:space="preserve">$ mergechaos rescue --worktree ~/work/acme-shop-theme</text>
+<text x="20" y="542" font-size="12.5" class="mono" style="fill:#7ee787;white-space:pre" xml:space="preserve">Rescued 3 path(s) to rescue/acme-shop-theme/2026-10-25 at 5d0550ea41; 1 left out (listed in .mergechaos/RESCUE.md). T…</text>
+<text x="20" y="561" font-size="12.5" class="mono" style="fill:#6cb6ff;white-space:pre" xml:space="preserve"># 6. Land: main moves to the tested merge commit; the live edit in src/cart.js is kept</text>
+<text x="20" y="580" font-size="12.5" class="mono" style="fill:var(--term-fg);white-space:pre" xml:space="preserve">$ mergechaos land --repo ~/work/acme-shop --base main --old &lt;base tip&gt; --new merge/2026-10-25-11-08 --dry-run</text>
+<text x="20" y="599" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">Dry run: main e0646dfe67 -&gt; f3912c1d02 (working tree ~/work/acme-shop)</text>
+<text x="20" y="618" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">paths: EQUAL 0, SAFE 4, COLLIDE 1</text>
+<text x="20" y="637" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">  COLLIDE	M	src/cart.js</text>
+<text x="20" y="656" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">  SAFE	A	src/checkout.js</text>
+<text x="20" y="675" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">  SAFE	M	src/shared.js</text>
+<text x="20" y="694" font-size="12.5" class="mono" style="fill:var(--term-fg);white-space:pre" xml:space="preserve">$ mergechaos land --repo ~/work/acme-shop --base main --old &lt;base tip&gt; --new merge/2026-10-25-11-08</text>
+<text x="20" y="713" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">main e0646dfe67 -&gt; f3912c1d02 (working tree ~/work/acme-shop)</text>
+<text x="20" y="732" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">paths: EQUAL 0, SAFE 4, COLLIDE 1</text>
+<text x="20" y="751" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">  COLLIDE	M	src/cart.js</text>
+<text x="20" y="770" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">  SAFE	A	src/checkout.js</text>
+<text x="20" y="789" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">  SAFE	M	src/shared.js</text>
+<text x="20" y="808" font-size="12.5" class="mono" style="fill:#7ee787;white-space:pre" xml:space="preserve">  src/cart.js: merged into the uncommitted edit (LF)</text>
+<text x="20" y="827" font-size="12.5" class="mono" style="fill:#6cb6ff;white-space:pre" xml:space="preserve"># 7. Archive the rescue branch and the ARCHIVE verdicts (tags, nothing is lost)</text>
+<text x="20" y="846" font-size="12.5" class="mono" style="fill:var(--term-fg);white-space:pre" xml:space="preserve">$ mergechaos archive --repo ~/work/acme-shop --branch rescue/acme-shop-theme/2026-10-25,agent-d/typo</text>
+<text x="20" y="865" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">rescue/acme-shop-theme/2026-10-25 -&gt; tag archive/rescue/acme-shop-theme/2026-10-25 (5d0550ea41), branch removed</text>
+<text x="20" y="884" font-size="12.5" class="mono" style="fill:var(--term-muted);white-space:pre" xml:space="preserve">agent-d/typo -&gt; tag archive/agent-d/typo (57c4f73d02), branch removed</text>
+</svg>

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="300" viewBox="0 0 1280 300" role="img" aria-labelledby="t">
+<title id="t">mergechaos: From many branches and dead sessions to one clean base.</title>
+<style>
+  :root { --bg:#f6f8fa; --card:#ffffff; --line:#d0d7de; --fg:#1f2328; --muted:#59636e; --blue:#0969da; --green:#1a7f37; --amber:#9a6700; --red:#cf222e; --purple:#8250df;
+          --blue-bg:#ddf4ff; --green-bg:#dafbe1; --amber-bg:#fff8c5; --red-bg:#ffebe9; --purple-bg:#fbefff; --term:#0d1117; --term-fg:#e6edf3; --term-muted:#9198a1; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0d1117; --card:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#9198a1; --blue:#4493f8; --green:#3fb950; --amber:#d29922; --red:#f85149; --purple:#ab7df8;
+            --blue-bg:#0c2d6b; --green-bg:#0f3a1d; --amber-bg:#3b2e00; --red-bg:#4c1214; --purple-bg:#2e1a52; --term:#010409; }
+  }
+  text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--fg); }
+  .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+  .muted { fill: var(--muted); }
+  .h { font-weight: 600; }
+  .card { fill: var(--card); stroke: var(--line); stroke-width: 1; }
+  .wire { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/></marker></defs>
+<rect width="1280" height="300" rx="12" style="fill:var(--bg)"/>
+<line x1="860" y1="160" x2="1230" y2="160" stroke-width="3" style="stroke:var(--line)"/>
+<path d="M880,160 C910,160 900,160 940,160 L1020,160 C1050,160 1040,160 1070,160" fill="none" stroke-width="3" style="stroke:var(--blue)"/>
+<circle cx="960" cy="160" r="6" stroke-width="3" style="fill:var(--card);stroke:var(--blue)"/>
+<path d="M920,160 C950,160 940,205 980,205 L1050,205 C1080,205 1070,160 1100,160" fill="none" stroke-width="3" style="stroke:var(--green)"/>
+<circle cx="1000" cy="205" r="6" stroke-width="3" style="fill:var(--card);stroke:var(--green)"/>
+<path d="M960,160 C990,160 980,250 1020,250 L1080,250 C1110,250 1100,160 1130,160" fill="none" stroke-width="3" style="stroke:var(--amber)"/>
+<circle cx="1040" cy="250" r="6" stroke-width="3" style="fill:var(--card);stroke:var(--amber)"/>
+<path d="M1000,160 C1030,160 1020,115 1060,115 L1110,115 C1140,115 1130,160 1160,160" fill="none" stroke-width="3" style="stroke:var(--purple)"/>
+<circle cx="1080" cy="115" r="6" stroke-width="3" style="fill:var(--card);stroke:var(--purple)"/>
+<circle cx="880" cy="160" r="8" stroke-width="3" style="fill:var(--card);stroke:var(--fg)"/>
+<circle cx="1000" cy="160" r="8" stroke-width="3" style="fill:var(--card);stroke:var(--fg)"/>
+<circle cx="1090" cy="160" r="8" stroke-width="3" style="fill:var(--card);stroke:var(--fg)"/>
+<circle cx="1150" cy="160" r="8" stroke-width="3" style="fill:var(--card);stroke:var(--fg)"/>
+<circle cx="1230" cy="160" r="8" stroke-width="3" style="fill:var(--card);stroke:var(--fg)"/>
+<text x="64" y="138" font-size="72" class="mono h">mergechaos</text>
+<text x="66" y="186" font-size="24" class="" >From many branches and dead sessions to one clean base.</text>
+<text x="66" y="222" font-size="17" class="muted" >Inventory, a plan that asks before it guesses, landing that loses nothing.</text>
+</svg>
