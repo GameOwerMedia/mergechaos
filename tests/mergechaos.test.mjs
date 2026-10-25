@@ -1,7 +1,7 @@
 // Tests for mergechaos on throwaway git repositories: branches, worktrees, stale sessions, a conflicting file.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -334,7 +334,8 @@ test('land: a Latin-1 collision is merged without touching the owner bytes', () 
 });
 
 test('land: a mode-only change is applied where the filesystem has an exec bit, reported otherwise', () => {
-  const { d, g, OLD } = landable(dd => write(dd, 'run.sh', 'echo hi\n'), (dd, gg) => gg('update-index', '--chmod=+x', 'run.sh'));
+  // Set the bit on disk too: with core.filemode=true, `git add -A` in landable() would otherwise reset the index mode.
+  const { d, g, OLD } = landable(dd => write(dd, 'run.sh', 'echo hi\n'), (dd, gg) => { chmodSync(join(dd, 'run.sh'), 0o755); gg('update-index', '--chmod=+x', 'run.sh'); });
   try {
     const out = land({ repo: d, base: 'main', oldRef: OLD, newRef: 'merge/x' });
     const row = out.table.find(t => t.path === 'run.sh');
